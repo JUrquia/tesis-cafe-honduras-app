@@ -1,0 +1,7 @@
+# NUNCA subir a GitHub
+.streamlit/secrets.toml
+service_account.json
+*.json
+__pycache__/
+*.pyc
+.env
