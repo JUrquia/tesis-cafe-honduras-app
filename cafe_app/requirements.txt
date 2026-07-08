@@ -13,3 +13,4 @@ plotly
 folium
 streamlit-folium
 geopandas
+shapely
