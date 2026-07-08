@@ -334,38 +334,99 @@ def clasificar_zona(df_ts, elev_mean, apto_altitud):
     peak_idx = df_ts['NDVI_SG'].idxmax() if 'NDVI_SG' in df_ts.columns and len(ndvi_sg) > 0 else None
     peak_mes = int(df_ts.loc[peak_idx, 'fecha'].month) if peak_idx is not None else 0
 
-    # NIVEL 1: Reglas espectrales (datos reales)
+    # ─────────────────────────────────────────────────────────────────────────
+    # NIVEL 1: Reglas espectrales calibradas para Honduras
+    # Umbrales ajustados para distinguir café de bosque, pasto y cultivos
+    # Bosque denso: NDVI>0.75, EVI>0.50, GNDVI>0.65, NDRE>0.55, Amp<0.10
+    # Café arábica: NDVI 0.40-0.75, EVI 0.20-0.50, variación estacional mayor
+    # ─────────────────────────────────────────────────────────────────────────
     reglas = {
-        'NDVI real [0.35-0.85]':     0.35 <= ndvi_prom <= 0.85,
-        'Amplitud NDVI >= 0.08':     ndvi_amp  >= 0.08,
-        'EVI real >= 0.20':          evi_prom  >= 0.20,
-        'GNDVI real >= 0.30':        gndvi_prom>= 0.30,
-        'SAVI real >= 0.25':         savi_prom >= 0.25,
-        'NDRE real >= 0.28':         ndre_prom >= 0.28,
+        'NDVI cafe [0.40-0.75]':     0.40 <= ndvi_prom <= 0.75,
+        'Amplitud NDVI >= 0.10':     ndvi_amp   >= 0.10,
+        'EVI cafe [0.20-0.50]':      0.20 <= evi_prom   <= 0.50,
+        'GNDVI cafe [0.30-0.65]':    0.30 <= gndvi_prom <= 0.65,
+        'SAVI cafe [0.25-0.55]':     0.25 <= savi_prom  <= 0.55,
+        'NDRE cafe [0.28-0.55]':     0.28 <= ndre_prom  <= 0.55,
         'Pico NDVI jul-nov':         7 <= peak_mes <= 11,
         'Altitud 800-1800 msnm':     apto_altitud,
     }
     n_ok   = sum(reglas.values())
     sc_reg = n_ok / len(reglas) * 100
 
-    # NIVEL 2: Random Forest
+    # Indicadores adicionales de NO cafe (penalizan el score)
+    es_bosque_denso = (ndvi_prom > 0.75 or evi_prom > 0.50 or
+                       gndvi_prom > 0.65 or ndre_prom > 0.55)
+    es_zona_baja    = ndvi_amp < 0.08   # bosque maduro cambia poco
+    penalizacion    = 0.0
+    if es_bosque_denso:
+        penalizacion += 25.0   # penalizar si indices apuntan a bosque denso
+    if es_zona_baja:
+        penalizacion += 10.0   # poca variacion estacional = no es cafe
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # NIVEL 2: Random Forest con muestras mas representativas de Honduras
+    # Muestras calibradas con valores tipicos de cada clase en la region
+    # ─────────────────────────────────────────────────────────────────────────
     np.random.seed(42)
-    n_ref = 400
+    n_ref = 500
     rows  = []
-    for clase, mu in [
-        (1, [0.60, 0.54, 0.40, -0.03, 0.44, 0.52, 0.21, 1200]),
-        (2, [0.83, 0.75, 0.57,  0.10, 0.62, 0.72, 0.05, 1400]),
-        (3, [0.36, 0.30, 0.21, -0.20, 0.25, 0.29, 0.31,  700]),
-        (4, [0.44, 0.37, 0.27, -0.12, 0.30, 0.36, 0.46,  500]),
-    ]:
-        arr = np.random.normal(mu, 0.07, (n_ref, 8))
-        df  = pd.DataFrame(arr,
-              columns=['ndvi','gndvi','evi','ndwi','savi','ndre','amp','elev'])
-        df['clase'] = clase
-        rows.append(df)
+
+    # Cafe arabica Honduras (800-1800 msnm): NDVI moderado, variacion media
+    rows.append(pd.DataFrame({
+        'ndvi':  np.random.normal(0.58, 0.07, n_ref),   # 0.44-0.72
+        'gndvi': np.random.normal(0.52, 0.06, n_ref),
+        'evi':   np.random.normal(0.38, 0.06, n_ref),   # 0.20-0.50
+        'ndwi':  np.random.normal(-0.03, 0.07, n_ref),
+        'savi':  np.random.normal(0.42, 0.06, n_ref),
+        'ndre':  np.random.normal(0.46, 0.06, n_ref),   # 0.28-0.55
+        'amp':   np.random.normal(0.20, 0.05, n_ref),   # variacion estacional
+        'elev':  np.random.normal(1200, 200, n_ref),
+        'clase': 1
+    }))
+
+    # Bosque latifoliado (NDVI alto, poca variacion, indices altos)
+    rows.append(pd.DataFrame({
+        'ndvi':  np.random.normal(0.82, 0.05, n_ref),   # >0.75
+        'gndvi': np.random.normal(0.74, 0.05, n_ref),   # >0.65
+        'evi':   np.random.normal(0.56, 0.04, n_ref),   # >0.50
+        'ndwi':  np.random.normal(0.10, 0.05, n_ref),
+        'savi':  np.random.normal(0.61, 0.04, n_ref),   # >0.55
+        'ndre':  np.random.normal(0.71, 0.04, n_ref),   # >0.55
+        'amp':   np.random.normal(0.06, 0.03, n_ref),   # poca variacion
+        'elev':  np.random.normal(1350, 250, n_ref),
+        'clase': 2
+    }))
+
+    # Pasto / gramíneas (NDVI bajo, alta variacion estacional)
+    rows.append(pd.DataFrame({
+        'ndvi':  np.random.normal(0.35, 0.10, n_ref),
+        'gndvi': np.random.normal(0.29, 0.09, n_ref),
+        'evi':   np.random.normal(0.20, 0.07, n_ref),
+        'ndwi':  np.random.normal(-0.22, 0.08, n_ref),
+        'savi':  np.random.normal(0.23, 0.07, n_ref),
+        'ndre':  np.random.normal(0.27, 0.08, n_ref),
+        'amp':   np.random.normal(0.32, 0.09, n_ref),
+        'elev':  np.random.normal(700, 200, n_ref),
+        'clase': 3
+    }))
+
+    # Cultivo anual / milpa (muy variable, altitud baja)
+    rows.append(pd.DataFrame({
+        'ndvi':  np.random.normal(0.44, 0.12, n_ref),
+        'gndvi': np.random.normal(0.37, 0.11, n_ref),
+        'evi':   np.random.normal(0.27, 0.10, n_ref),
+        'ndwi':  np.random.normal(-0.12, 0.10, n_ref),
+        'savi':  np.random.normal(0.30, 0.09, n_ref),
+        'ndre':  np.random.normal(0.35, 0.10, n_ref),
+        'amp':   np.random.normal(0.48, 0.10, n_ref),
+        'elev':  np.random.normal(500, 150, n_ref),
+        'clase': 4
+    }))
+
     df_ref = pd.concat(rows, ignore_index=True)
     FCOLS  = ['ndvi','gndvi','evi','ndwi','savi','ndre','amp','elev']
-    clf    = RandomForestClassifier(n_estimators=200, max_depth=10,
+    clf    = RandomForestClassifier(n_estimators=300, max_depth=12,
+                                     min_samples_leaf=3,
                                      random_state=42, n_jobs=-1)
     clf.fit(df_ref[FCOLS].values, df_ref['clase'].values)
 
@@ -374,7 +435,11 @@ def clasificar_zona(df_ts, elev_mean, apto_altitud):
     proba     = clf.predict_proba(x_zona)[0]
     prob_cafe = float(proba[0]) * 100
 
-    # NIVEL 3: Correlacion con patron fenologico
+    # ─────────────────────────────────────────────────────────────────────────
+    # NIVEL 3: Correlacion con patron fenologico del cafe en Honduras
+    # El cafe tiene pico ago-sep y caida en cosecha nov-ene
+    # Bosque denso tiene curva mas plana y alta todo el año
+    # ─────────────────────────────────────────────────────────────────────────
     PATRON_CAFE = np.array([0.55,0.52,0.48,0.45,0.58,0.68,
                              0.72,0.75,0.73,0.68,0.60,0.57])
     df_m  = (df_ts.set_index('fecha').resample('ME')[['NDVI_SG']]
@@ -383,15 +448,38 @@ def clasificar_zona(df_ts, elev_mean, apto_altitud):
     patron_obs  = df_m.groupby('mes')['NDVI_SG'].mean()
     meses_c     = sorted(set(patron_obs.index) & set(range(1, 13)))
 
-    if len(meses_c) >= 4:
+    if len(meses_c) >= 6:
         obs  = patron_obs.loc[meses_c].values
         ref  = PATRON_CAFE[[m-1 for m in meses_c]]
         corr = float(np.corrcoef(obs, ref)[0, 1])
+        # Manejar NaN — puede ocurrir si la serie tiene poca variacion (bosque)
+        if np.isnan(corr):
+            corr = 0.0   # sin variacion = no es cafe
+    elif len(meses_c) >= 4:
+        obs  = patron_obs.loc[meses_c].values
+        ref  = PATRON_CAFE[[m-1 for m in meses_c]]
+        corr_raw = float(np.corrcoef(obs, ref)[0, 1])
+        corr = 0.0 if np.isnan(corr_raw) else corr_raw * 0.7  # penalizar pocos datos
     else:
-        corr = 0.5
+        corr = 0.0   # insuficientes datos = no confirmado
 
-    sc_fenol  = max(0.0, min(1.0, corr))
-    score_fin = (0.35*(sc_reg/100) + 0.45*(prob_cafe/100) + 0.20*sc_fenol) * 100
+    sc_fenol = max(0.0, min(1.0, corr))
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # SCORE INTEGRADO con penalizaciones
+    # ─────────────────────────────────────────────────────────────────────────
+    score_base = (0.35*(sc_reg/100) + 0.45*(prob_cafe/100) + 0.20*sc_fenol) * 100
+
+    # Aplicar penalizaciones por indicadores de bosque
+    score_fin = max(0.0, score_base - penalizacion)
+
+    # Regla de techo: si RF da < 50% probabilidad, el score no puede superar 60%
+    if prob_cafe < 50.0:
+        score_fin = min(score_fin, 60.0)
+
+    # Regla de techo: si NDVI > 0.75 (bosque denso), no puede ser CAFE CONFIRMADO
+    if ndvi_prom > 0.75:
+        score_fin = min(score_fin, 54.0)
 
     if   score_fin >= 75: vered='CAFE CONFIRMADO';     cv='#1a7a4a'; emoji='OK'
     elif score_fin >= 55: vered='PROBABLE CAFE';       cv='#E87722'; emoji='PROBABLE'
