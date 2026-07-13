@@ -213,7 +213,7 @@ with st.sidebar:
     st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/3/39/Flag_of_Honduras.svg/320px-Flag_of_Honduras.svg.png",
              width=120)
     st.markdown("### ☕ Sistema Predictivo de Café")
-    st.markdown("**Tesis UNAH**")
+    st.markdown("**Tesis UNAH** | Gerencia TI")
     st.divider()
 
     pagina = st.selectbox(
@@ -352,7 +352,6 @@ if pagina == "🏠 Dashboard General":
             else:           return 'background-color: #ffcdd2; color: #b71c1c'
         return ''
 
-    #st.dataframe(pivot.style.applymap(color_cells), use_container_width=True)
     st.dataframe(pivot.style.map(color_cells), use_container_width=True)
 
 
@@ -1063,4 +1062,4 @@ elif pagina == "ℹ️ Acerca del Sistema":
     **Proyecto GEE:** `tesis-cafe-honduras`
     """)
 
-    st.caption("Tesis — UNAH")
+    st.caption("Tesis de Posgrado — UNAH | Gerencia de Tecnologías de la Información | 2025-2026")

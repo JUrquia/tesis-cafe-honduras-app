@@ -528,6 +528,140 @@ def predecir_rendimiento(clasif, area_ha, dept, clima):
     }
 
 
+
+
+def proyectar_3_anios(pred_ens, area_ha, dept, anio_siembra):
+    factores = {
+        anio_siembra:     0.00,
+        anio_siembra + 1: 0.15,
+        anio_siembra + 2: 0.50,
+        anio_siembra + 3: 0.80,
+        anio_siembra + 4: 1.00,
+    }
+    base_plena = pred_ens
+    hist_dep   = IHCAFE_REF.get(dept, 20.0)
+    fases      = ['Establecimiento','Primera floracion',
+                  'Primera cosecha comercial',
+                  'Produccion en desarrollo','Produccion plena']
+    proyeccion = []
+    for idx, (anio, factor) in enumerate(factores.items()):
+        rend_anio = round(base_plena * factor, 2)
+        prod_anio = round(rend_anio * area_ha, 1)
+        proyeccion.append({
+            'Anio':                   anio,
+            'Fase':                   fases[idx],
+            'Factor maduracion':      f'{int(factor*100)}%',
+            'Rendimiento (qq/ha)':    rend_anio,
+            'Produccion est. (qq)':   prod_anio,
+            'vs Media dept (qq/ha)':  round(rend_anio - hist_dep, 2),
+        })
+    return proyeccion
+
+
+def detectar_siembra_nueva(df_ts, ndvi_prom):
+    resultado = {'es_siembra_nueva':False,'confianza':0,
+                 'evidencias':[],'recomendacion':''}
+    if 0.28 <= ndvi_prom <= 0.52:
+        resultado['evidencias'].append(
+            f'NDVI ({ndvi_prom:.3f}) en rango de cafe joven (0.28-0.52)')
+        resultado['confianza'] += 35
+    if 'NDVI_SG' in df_ts.columns:
+        ndvi_sg = df_ts['NDVI_SG'].dropna()
+        if len(ndvi_sg) >= 6:
+            amp = float(ndvi_sg.max() - ndvi_sg.min()) if len(ndvi_sg)>1 else 0
+            if 0.05 <= amp <= 0.18:
+                resultado['evidencias'].append(
+                    f'Amplitud NDVI baja ({amp:.3f}) — planta en desarrollo')
+                resultado['confianza'] += 25
+            primera = float(ndvi_sg.iloc[:len(ndvi_sg)//2].mean())
+            segunda = float(ndvi_sg.iloc[len(ndvi_sg)//2:].mean())
+            if segunda > primera + 0.04:
+                resultado['evidencias'].append(
+                    f'Tendencia creciente ({primera:.3f} a {segunda:.3f})')
+                resultado['confianza'] += 25
+    resultado['confianza'] = min(100, resultado['confianza'])
+    resultado['es_siembra_nueva'] = resultado['confianza'] >= 50
+    if resultado['confianza'] >= 70:
+        resultado['recomendacion'] = (
+            'Alta probabilidad de siembra nueva. Registrar en catastro IHCAFE.')
+    elif resultado['confianza'] >= 50:
+        resultado['recomendacion'] = (
+            'Posible siembra nueva. Comparar con imagenes del ano anterior.')
+    else:
+        resultado['recomendacion'] = 'No se detecta patron de siembra nueva.'
+    if not resultado['evidencias']:
+        resultado['evidencias'].append(
+            f'NDVI ({ndvi_prom:.3f}) fuera del rango de cafe joven')
+    return resultado
+
+
+def detectar_danos(ndvi_prom, evi_prom, ndre_prom, ndwi_prom, ndvi_amp):
+    alertas = []
+    nivel   = 'NORMAL'
+    color_n = '#1a7a4a'
+
+    ratio = ndre_prom / ndvi_prom if ndvi_prom > 0 else 0
+    if ratio < 0.62:
+        alertas.append({
+            'tipo':   'Posible Roya (Hemileia vastatrix)',
+            'color':  '#c0392b',
+            'detalle':f'NDRE/NDVI={ratio:.3f} (<0.62). Caida del Red Edge '
+                       f'antes que NDVI — firma espectral de infeccion fungica. '
+                       f'NDRE={ndre_prom:.3f}, NDVI={ndvi_prom:.3f}',
+            'accion': 'Aplicar fungicida preventivo. Inspeccionar haz y enves de hojas.',
+        })
+        nivel = 'ALERTA'; color_n = '#c0392b'
+
+    if ndwi_prom < -0.15:
+        alertas.append({
+            'tipo':   'Estres hidrico',
+            'color':  '#E87722',
+            'detalle':f'NDWI={ndwi_prom:.3f} (<-0.15). Deficit de agua '
+                       f'en el dosel. Posible sequia o problema de irrigacion.',
+            'accion': 'Verificar disponibilidad de agua en la zona.',
+        })
+        if nivel == 'NORMAL': nivel = 'ATENCION'; color_n = '#E87722'
+
+    indices_bajos = sum([ndvi_prom<0.40, evi_prom<0.22, ndre_prom<0.30])
+    if indices_bajos >= 2:
+        alertas.append({
+            'tipo':   'Defoliacion o perdida de follaje',
+            'color':  '#922b21',
+            'detalle':f'Multiples indices bajos: NDVI={ndvi_prom:.3f}, '
+                       f'EVI={evi_prom:.3f}, NDRE={ndre_prom:.3f}. '
+                       f'Patron de defoliacion severa o daño post-cosecha.',
+            'accion': 'Inspeccion urgente de campo.',
+        })
+        nivel = 'CRITICO'; color_n = '#922b21'
+
+    if ndvi_amp > 0.45:
+        alertas.append({
+            'tipo':   'Variabilidad espectral alta',
+            'color':  '#E87722',
+            'detalle':f'Amplitud NDVI={ndvi_amp:.3f} (>0.45). '
+                       f'Posible daño irregular o parches de plaga.',
+            'accion': 'Mapear zonas de mayor variabilidad para inspeccion.',
+        })
+        if nivel == 'NORMAL': nivel = 'ATENCION'; color_n = '#E87722'
+
+    if not alertas:
+        alertas.append({
+            'tipo':   'Sin alertas — cultivo saludable',
+            'color':  '#1a7a4a',
+            'detalle':f'Todos los indices en rango normal. '
+                       f'NDVI={ndvi_prom:.3f}, EVI={evi_prom:.3f}, '
+                       f'NDRE={ndre_prom:.3f}, NDWI={ndwi_prom:.3f}',
+            'accion': 'Continuar monitoreo regular cada 30 dias.',
+        })
+
+    return {
+        'alertas':  alertas,
+        'nivel':    nivel,
+        'color':    color_n,
+        'n_alertas':len([a for a in alertas if 'saludable' not in a['tipo']]),
+    }
+
+
 # ════════════════════════════════════════════════════════════════
 # EJECUTAR ANALISIS REAL CON GEE
 # ════════════════════════════════════════════════════════════════
@@ -1311,138 +1445,3 @@ st.caption(
     "via Google Earth Engine | Resolucion 10m | Mascara de nubes SCL | "
     "Savitzky-Golay w=7 m=2 | Tesis UNAH"
 )
-
-# ════════════════════════════════════════════════════════════════
-# FUNCIONES MODULOS EVALUADOR (agregadas al final)
-# ════════════════════════════════════════════════════════════════
-
-def proyectar_3_anios(pred_ens, area_ha, dept, anio_siembra):
-    factores = {
-        anio_siembra:     0.00,
-        anio_siembra + 1: 0.15,
-        anio_siembra + 2: 0.50,
-        anio_siembra + 3: 0.80,
-        anio_siembra + 4: 1.00,
-    }
-    base_plena = pred_ens
-    hist_dep   = IHCAFE_REF.get(dept, 20.0)
-    fases      = ['Establecimiento','Primera floracion',
-                  'Primera cosecha comercial',
-                  'Produccion en desarrollo','Produccion plena']
-    proyeccion = []
-    for idx, (anio, factor) in enumerate(factores.items()):
-        rend_anio = round(base_plena * factor, 2)
-        prod_anio = round(rend_anio * area_ha, 1)
-        proyeccion.append({
-            'Anio':                   anio,
-            'Fase':                   fases[idx],
-            'Factor maduracion':      f'{int(factor*100)}%',
-            'Rendimiento (qq/ha)':    rend_anio,
-            'Produccion est. (qq)':   prod_anio,
-            'vs Media dept (qq/ha)':  round(rend_anio - hist_dep, 2),
-        })
-    return proyeccion
-
-
-def detectar_siembra_nueva(df_ts, ndvi_prom):
-    resultado = {'es_siembra_nueva':False,'confianza':0,
-                 'evidencias':[],'recomendacion':''}
-    if 0.28 <= ndvi_prom <= 0.52:
-        resultado['evidencias'].append(
-            f'NDVI ({ndvi_prom:.3f}) en rango de cafe joven (0.28-0.52)')
-        resultado['confianza'] += 35
-    if 'NDVI_SG' in df_ts.columns:
-        ndvi_sg = df_ts['NDVI_SG'].dropna()
-        if len(ndvi_sg) >= 6:
-            amp = float(ndvi_sg.max() - ndvi_sg.min()) if len(ndvi_sg)>1 else 0
-            if 0.05 <= amp <= 0.18:
-                resultado['evidencias'].append(
-                    f'Amplitud NDVI baja ({amp:.3f}) — planta en desarrollo')
-                resultado['confianza'] += 25
-            primera = float(ndvi_sg.iloc[:len(ndvi_sg)//2].mean())
-            segunda = float(ndvi_sg.iloc[len(ndvi_sg)//2:].mean())
-            if segunda > primera + 0.04:
-                resultado['evidencias'].append(
-                    f'Tendencia creciente ({primera:.3f} a {segunda:.3f})')
-                resultado['confianza'] += 25
-    resultado['confianza'] = min(100, resultado['confianza'])
-    resultado['es_siembra_nueva'] = resultado['confianza'] >= 50
-    if resultado['confianza'] >= 70:
-        resultado['recomendacion'] = (
-            'Alta probabilidad de siembra nueva. Registrar en catastro IHCAFE.')
-    elif resultado['confianza'] >= 50:
-        resultado['recomendacion'] = (
-            'Posible siembra nueva. Comparar con imagenes del ano anterior.')
-    else:
-        resultado['recomendacion'] = 'No se detecta patron de siembra nueva.'
-    if not resultado['evidencias']:
-        resultado['evidencias'].append(
-            f'NDVI ({ndvi_prom:.3f}) fuera del rango de cafe joven')
-    return resultado
-
-
-def detectar_danos(ndvi_prom, evi_prom, ndre_prom, ndwi_prom, ndvi_amp):
-    alertas = []
-    nivel   = 'NORMAL'
-    color_n = '#1a7a4a'
-
-    ratio = ndre_prom / ndvi_prom if ndvi_prom > 0 else 0
-    if ratio < 0.62:
-        alertas.append({
-            'tipo':   'Posible Roya (Hemileia vastatrix)',
-            'color':  '#c0392b',
-            'detalle':f'NDRE/NDVI={ratio:.3f} (<0.62). Caida del Red Edge '
-                       f'antes que NDVI — firma espectral de infeccion fungica. '
-                       f'NDRE={ndre_prom:.3f}, NDVI={ndvi_prom:.3f}',
-            'accion': 'Aplicar fungicida preventivo. Inspeccionar haz y enves de hojas.',
-        })
-        nivel = 'ALERTA'; color_n = '#c0392b'
-
-    if ndwi_prom < -0.15:
-        alertas.append({
-            'tipo':   'Estres hidrico',
-            'color':  '#E87722',
-            'detalle':f'NDWI={ndwi_prom:.3f} (<-0.15). Deficit de agua '
-                       f'en el dosel. Posible sequia o problema de irrigacion.',
-            'accion': 'Verificar disponibilidad de agua en la zona.',
-        })
-        if nivel == 'NORMAL': nivel = 'ATENCION'; color_n = '#E87722'
-
-    indices_bajos = sum([ndvi_prom<0.40, evi_prom<0.22, ndre_prom<0.30])
-    if indices_bajos >= 2:
-        alertas.append({
-            'tipo':   'Defoliacion o perdida de follaje',
-            'color':  '#922b21',
-            'detalle':f'Multiples indices bajos: NDVI={ndvi_prom:.3f}, '
-                       f'EVI={evi_prom:.3f}, NDRE={ndre_prom:.3f}. '
-                       f'Patron de defoliacion severa o daño post-cosecha.',
-            'accion': 'Inspeccion urgente de campo.',
-        })
-        nivel = 'CRITICO'; color_n = '#922b21'
-
-    if ndvi_amp > 0.45:
-        alertas.append({
-            'tipo':   'Variabilidad espectral alta',
-            'color':  '#E87722',
-            'detalle':f'Amplitud NDVI={ndvi_amp:.3f} (>0.45). '
-                       f'Posible daño irregular o parches de plaga.',
-            'accion': 'Mapear zonas de mayor variabilidad para inspeccion.',
-        })
-        if nivel == 'NORMAL': nivel = 'ATENCION'; color_n = '#E87722'
-
-    if not alertas:
-        alertas.append({
-            'tipo':   'Sin alertas — cultivo saludable',
-            'color':  '#1a7a4a',
-            'detalle':f'Todos los indices en rango normal. '
-                       f'NDVI={ndvi_prom:.3f}, EVI={evi_prom:.3f}, '
-                       f'NDRE={ndre_prom:.3f}, NDWI={ndwi_prom:.3f}',
-            'accion': 'Continuar monitoreo regular cada 30 dias.',
-        })
-
-    return {
-        'alertas':  alertas,
-        'nivel':    nivel,
-        'color':    color_n,
-        'n_alertas':len([a for a in alertas if 'saludable' not in a['tipo']]),
-    }
