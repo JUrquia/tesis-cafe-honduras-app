@@ -28,6 +28,7 @@ from gee_extractor import (
     extraer_series_temporales, get_elevacion,
     clasificar_pixeles_gee, get_distribucion_clases, INDICE_COLS
 )
+from predictor_real import predecir_rendimiento, estado_modelos
 
 st.set_page_config(
     page_title="Analisis de Zona - Cafe Honduras",
@@ -103,6 +104,23 @@ else:
     st.error(
         "No se pudo conectar con Google Earth Engine. "
         "Verifica que las credenciales esten configuradas en Streamlit Secrets."
+    )
+
+# Estado de los modelos predictivos
+modo_modelos, meta_modelos = estado_modelos()
+if modo_modelos == 'real':
+    st.sidebar.success("Modelos: Reales (RF+XGB)")
+    if meta_modelos.get('rmse'):
+        st.sidebar.caption(
+            f"RMSE={meta_modelos['rmse']:.3f} | "
+            f"R²={meta_modelos.get('r2','?')} | "
+            f"Entrenado: {meta_modelos.get('fecha','?')}"
+        )
+else:
+    st.sidebar.warning("Modelos: Formula calibrada")
+    st.sidebar.caption(
+        "Sube los .pkl a cafe_app/modelos/ para activar "
+        "predicciones con RF+XGB reales"
     )
 
 # ════════════════════════════════════════════════════════════════
@@ -521,34 +539,9 @@ def clasificar_zona(df_ts, elev_mean, apto_altitud):
     }
 
 
-def predecir_rendimiento(clasif, area_ha, dept, clima):
-    """Prediccion de rendimiento con Ensemble 0.55RF+0.45XGB."""
-    base  = IHCAFE_REF.get(dept, 20.0)
-    tmax  = clima.get('tmax_mean', 26.5) if clima else 26.5
-    prec  = clima.get('precip_anual', 1300) if clima else 1300
-
-    ajuste = (
-        (clasif['ndvi_prom'] - 0.60) * 18.0 +
-        (clasif['ndvi_amp']  - 0.22) *  9.0 +
-        (clasif['evi_prom']  - 0.40) * 12.0 +
-        (prec - 1300) * 0.003 +
-        (tmax - 26.0) * (-0.45)
-    )
-    np.random.seed(int(abs(clasif['ndvi_prom'] * 10000)) % 2**31)
-    pred_rf  = round(max(5.0, min(40.0, base + ajuste + np.random.normal(0, 0.2))), 2)
-    pred_xgb = round(max(5.0, min(40.0, base + ajuste + np.random.normal(0, 0.2))), 2)
-    pred_ens = round(W_RF * pred_rf + W_XGB * pred_xgb, 2)
-    ic_lo    = round(pred_ens * 0.82, 2)
-    ic_hi    = round(pred_ens * 1.18, 2)
-    return {
-        'pred_rf': pred_rf, 'pred_xgb': pred_xgb, 'pred_ens': pred_ens,
-        'ic_lo': ic_lo, 'ic_hi': ic_hi,
-        'prod_est': round(pred_ens * area_ha, 0),
-        'prod_lo':  round(ic_lo   * area_ha, 0),
-        'prod_hi':  round(ic_hi   * area_ha, 0),
-        'hist_dep': base,
-        'delta':    round(pred_ens - base, 2),
-    }
+# predecir_rendimiento ahora viene de predictor_real.py (importado arriba)
+# Usa modelos .pkl reales si existen en cafe_app/modelos/
+# Fallback automatico a formula calibrada si no hay .pkl
 
 
 
@@ -769,7 +762,47 @@ if btn_analizar and st.session_state.poligono_geojson and gee_ok:
         clasif = clasificar_zona(df_ts, elev_mean, apto_altitud)
 
         update_progress(0.95, "Calculando prediccion de rendimiento...")
-        rend   = predecir_rendimiento(clasif, area_ha, dept_ref, clima)
+        # Construir dict de features para el predictor
+        features_para_pred = {
+            'ndvi_max':       float(df_ts['NDVI_SG'].max())  if 'NDVI_SG' in df_ts.columns else clasif['ndvi_prom'],
+            'ndvi_min':       float(df_ts['NDVI_SG'].min())  if 'NDVI_SG' in df_ts.columns else clasif['ndvi_prom'],
+            'ndvi_mean':      clasif['ndvi_prom'],
+            'ndvi_std':       float(df_ts['NDVI_SG'].std())  if 'NDVI_SG' in df_ts.columns else 0.05,
+            'ndvi_amplitude': clasif['ndvi_amp'],
+            'ndvi_auc':       clasif['ndvi_prom'] * 365,
+            'ndvi_peak_doy':  200.0,
+            'ndvi_q75_q25':   float(df_ts['NDVI_SG'].quantile(0.75) - df_ts['NDVI_SG'].quantile(0.25)) if 'NDVI_SG' in df_ts.columns else 0.10,
+            'evi_mean':       clasif['evi_prom'],
+            'evi_max':        float(df_ts['EVI_SG'].max())   if 'EVI_SG'  in df_ts.columns else clasif['evi_prom'],
+            'evi_std':        float(df_ts['EVI_SG'].std())   if 'EVI_SG'  in df_ts.columns else 0.04,
+            'evi_amplitude':  float(df_ts['EVI_SG'].max()  - df_ts['EVI_SG'].min())  if 'EVI_SG'  in df_ts.columns else 0.10,
+            'gndvi_mean':     clasif['gndvi_prom'],
+            'gndvi_max':      float(df_ts['GNDVI_SG'].max()) if 'GNDVI_SG' in df_ts.columns else clasif['gndvi_prom'],
+            'ndwi_mean':      clasif['ndwi_prom'],
+            'ndwi_min':       float(df_ts['NDWI_SG'].min())  if 'NDWI_SG' in df_ts.columns else clasif['ndwi_prom'],
+            'savi_mean':      clasif['savi_prom'],
+            'savi_max':       float(df_ts['SAVI_SG'].max())  if 'SAVI_SG' in df_ts.columns else clasif['savi_prom'],
+            'ndre_mean':      clasif['ndre_prom'],
+            'ndre_max':       float(df_ts['NDRE_SG'].max())  if 'NDRE_SG' in df_ts.columns else clasif['ndre_prom'],
+            'ndvi_q1':        float(df_ts[df_ts['fecha'].dt.quarter==1]['NDVI_SG'].mean()) if 'NDVI_SG' in df_ts.columns and len(df_ts) > 0 else clasif['ndvi_prom'],
+            'ndvi_q2':        float(df_ts[df_ts['fecha'].dt.quarter==2]['NDVI_SG'].mean()) if 'NDVI_SG' in df_ts.columns and len(df_ts) > 0 else clasif['ndvi_prom'],
+            'ndvi_q3':        float(df_ts[df_ts['fecha'].dt.quarter==3]['NDVI_SG'].mean()) if 'NDVI_SG' in df_ts.columns and len(df_ts) > 0 else clasif['ndvi_prom'],
+            'ndvi_q4':        float(df_ts[df_ts['fecha'].dt.quarter==4]['NDVI_SG'].mean()) if 'NDVI_SG' in df_ts.columns and len(df_ts) > 0 else clasif['ndvi_prom'],
+            'elev_mean':      elev_mean,
+            'n_obs':          float(len(df_ts)),
+            # Variables climaticas para fallback
+            'tmax_mean':      clima.get('tmax_mean', 26.5),
+            'precip_anual':   clima.get('precip_anual', 1300),
+        }
+        # Rellenar NaN que puedan venir de trimestres sin datos
+        for k, v in features_para_pred.items():
+            if isinstance(v, float) and np.isnan(v):
+                features_para_pred[k] = 0.0
+
+        rend = predecir_rendimiento(
+            clasif, area_ha, dept_ref, clima,
+            df_ts=df_ts, elev_mean=elev_mean
+        )
 
         # ── 5. Clasificacion pixeles GEE (en segundo plano) ───────────────
         update_progress(0.97, "Generando mapa de clasificacion...")
@@ -977,9 +1010,26 @@ reales de tu zona y mostrara resultados aqui.
                 c3.metric("vs. Media departamental",
                           f"{delta_s} qq/ha",
                           f"Ref {r['dept_ref']}: {rend['hist_dep']:.1f}")
-                c4.metric("Observaciones satelitales",
-                          f"{r['n_obs']}",
-                          f"Fuente: Sentinel-2")
+
+                # Mostrar si se usaron modelos reales o formula calibrada
+                if rend.get('modelo_real', False):
+                    c4.metric("Modelo predictivo",
+                              "RF+XGB Reales",
+                              "Entrenado con IHCAFE + Sentinel-2")
+                    st.success(
+                        f"Prediccion basada en modelos entrenados con datos reales | "
+                        f"{rend.get('fuente_modelo', '')}"
+                    )
+                else:
+                    c4.metric("Modelo predictivo",
+                              "Formula calibrada",
+                              "Sube .pkl para usar modelos reales")
+                    st.warning(
+                        "Prediccion usando formula calibrada con promedios IHCAFE. "
+                        "Para activar los modelos RF+XGB reales: ejecuta el notebook "
+                        "'entrenamiento_modelos_reales.ipynb' en Colab, descarga los "
+                        ".pkl y súbelos a cafe_app/modelos/ en GitHub."
+                    )
 
                 st.divider()
 
