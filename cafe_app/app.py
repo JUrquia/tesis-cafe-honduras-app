@@ -352,8 +352,8 @@ if pagina == "🏠 Dashboard General":
             else:           return 'background-color: #ffcdd2; color: #b71c1c'
         return ''
 
-    st.dataframe(pivot.style.applymap(color_cells), use_container_width=True)
-    #st.dataframe(pivot.style.map(color_cells), use_container_width=True)
+    #st.dataframe(pivot.style.applymap(color_cells), use_container_width=True)
+    st.dataframe(pivot.style.map(color_cells), use_container_width=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
