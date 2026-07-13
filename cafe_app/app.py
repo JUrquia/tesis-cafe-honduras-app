@@ -451,7 +451,7 @@ elif pagina == "🛰️ Explorador Satelital":
     with col1:
         dept_sat = st.selectbox("Departamento", list(DEPTS_ESTUDIO.values()))
     with col2:
-        temporada_sat = st.selectbox("Temporada", ['2024-2025','2023-2024','2022-2023','2021-2022'])
+        temporada_sat = st.selectbox("Temporada", ['2025-2026 (ACTUAL)','2024-2025','2023-2024','2022-2023','2021-2022'])
     with col3:
         indice_sel = st.selectbox("Índice primario", ['NDVI','EVI','GNDVI','NDWI','SAVI','NDRE'])
 
@@ -590,7 +590,7 @@ elif pagina == "🔮 Predicción de Cosecha":
     with tab_auto:
         st.markdown("**Predicción automática con parámetros climáticos en tiempo real**")
 
-        anio_pred = st.selectbox("Año satelital para predicción", [2025, 2024, 2023])
+        anio_pred = st.selectbox("Año satelital para predicción", [2026, 2025, 2024, 2023], help='2026 = prediccion para cosecha 2026-2027')
         temporada_pred = f"{anio_pred}-{anio_pred+1}"
 
         if st.button("🚀 Ejecutar predicción", type="primary"):

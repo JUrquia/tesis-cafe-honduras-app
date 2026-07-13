@@ -120,14 +120,37 @@ with col_mapa:
 
     c1, c2 = st.columns(2)
     with c1:
-        nombre_zona   = st.text_input("Nombre de la zona", value="Mi Finca")
+        nombre_zona = st.text_input("Nombre de la zona", value="Mi Finca")
     with c2:
-        anio_analisis = st.selectbox("Ano satelital", [2024, 2023, 2022, 2021])
+        # Opciones con etiqueta de temporada — incluye año actual 2026
+        ANIOS_OPCIONES = {
+            2026: "2026 → Temporada 2026-2027  (PREDICCION ACTUAL)",
+            2025: "2025 → Temporada 2025-2026",
+            2024: "2024 → Temporada 2024-2025",
+            2023: "2023 → Temporada 2023-2024",
+            2022: "2022 → Temporada 2022-2023",
+            2021: "2021 → Temporada 2021-2022",
+        }
+        anio_label = st.selectbox(
+            "Ano satelital / Temporada a predecir",
+            list(ANIOS_OPCIONES.values()),
+            index=0,
+            help=(
+                "Selecciona el ano de las imagenes satelitales a analizar.\n"
+                "Para estimar la cosecha que se recolectara este ciclo, "
+                "usa 2026 (datos Sentinel-2 enero-diciembre 2026)."
+            )
+        )
+        anio_analisis = int(anio_label.split(" ")[0])
 
     dept_ref = st.selectbox(
         "Departamento de referencia",
         DEPTS_LIST, index=3,
         help="Para comparar con la media historica departamental IHCAFE"
+    )
+    st.caption(
+        f"Temporada seleccionada: "
+        f"**{ANIOS_OPCIONES.get(anio_analisis, str(anio_analisis))}**"
     )
 
     st.markdown("<div class='section-title'>Paso 2 — Dibuja o sube el poligono</div>",
@@ -530,7 +553,16 @@ def predecir_rendimiento(clasif, area_ha, dept, clima):
 
 
 
-def proyectar_3_anios(pred_ens, area_ha, dept, anio_siembra):
+def proyectar_3_anios(pred_ens, area_ha, dept, anio_siembra,
+                       plantas_por_ha=2500):
+    """
+    Proyecta produccion de cafe nuevo del vivero a 5 años.
+    plantas_por_ha: densidad de siembra tipica en Honduras es 2000-3000 plantas/ha
+    Densidades comunes:
+      - Siembra tradicional:  1600-2000 plantas/ha (3.0m x 2.0m)
+      - Siembra semi-intensiva: 2500 plantas/ha (2.0m x 2.0m)
+      - Siembra intensiva: 3000-5000 plantas/ha (1.5m x 1.5m)
+    """
     factores = {
         anio_siembra:     0.00,
         anio_siembra + 1: 0.15,
@@ -538,24 +570,36 @@ def proyectar_3_anios(pred_ens, area_ha, dept, anio_siembra):
         anio_siembra + 3: 0.80,
         anio_siembra + 4: 1.00,
     }
-    base_plena = pred_ens
-    hist_dep   = IHCAFE_REF.get(dept, 20.0)
-    fases      = ['Establecimiento','Primera floracion',
-                  'Primera cosecha comercial',
-                  'Produccion en desarrollo','Produccion plena']
+    base_plena    = pred_ens
+    hist_dep      = IHCAFE_REF.get(dept, 20.0)
+    total_plantas = round(area_ha * plantas_por_ha)
+    fases         = ['Establecimiento','Primera floracion',
+                     'Primera cosecha comercial',
+                     'Produccion en desarrollo','Produccion plena']
+    # Produccion por planta a plena produccion
+    # qq/ha / plantas/ha = qq por planta
+    qq_por_planta_plena = base_plena / plantas_por_ha if plantas_por_ha > 0 else 0
+
     proyeccion = []
     for idx, (anio, factor) in enumerate(factores.items()):
-        rend_anio = round(base_plena * factor, 2)
-        prod_anio = round(rend_anio * area_ha, 1)
+        rend_anio   = round(base_plena * factor, 2)
+        prod_anio   = round(rend_anio * area_ha, 1)
+        # Produccion por planta individual
+        qq_planta   = round(qq_por_planta_plena * factor, 4)
+        # Equivalente en libras por planta (1 qq = 100 lb)
+        lb_planta   = round(qq_planta * 100, 2)
         proyeccion.append({
-            'Anio':                   anio,
-            'Fase':                   fases[idx],
-            'Factor maduracion':      f'{int(factor*100)}%',
-            'Rendimiento (qq/ha)':    rend_anio,
-            'Produccion est. (qq)':   prod_anio,
-            'vs Media dept (qq/ha)':  round(rend_anio - hist_dep, 2),
+            'Anio':                    anio,
+            'Fase':                    fases[idx],
+            'Factor maduracion':       f'{int(factor*100)}%',
+            'Total plantas':           total_plantas,
+            'Rendimiento (qq/ha)':     rend_anio,
+            'Produccion est. (qq)':    prod_anio,
+            'qq por planta':           qq_planta,
+            'lb por planta':           lb_planta,
+            'vs Media dept (qq/ha)':   round(rend_anio - hist_dep, 2),
         })
-    return proyeccion
+    return proyeccion, total_plantas, qq_por_planta_plena
 
 
 def detectar_siembra_nueva(df_ts, ndvi_prom):
@@ -1112,21 +1156,81 @@ reales de tu zona y mostrara resultados aqui.
             if clasif['score_final'] < 35:
                 st.warning("Zona no clasificada como cafe. Proyeccion no aplica.")
             else:
+                st.markdown("**Parametros de la nueva siembra**")
+
+                # Fila 1: Año y area
                 c1, c2 = st.columns(2)
                 anio_siembra = c1.number_input(
-                    "Año de siembra (salida del vivero)",
-                    min_value=2020, max_value=2030,
-                    value=r['anio'], step=1
+                    "Ano de siembra (salida del vivero)",
+                    min_value=2020, max_value=2035,
+                    value=2026, step=1,
+                    help="Ano en que se trasplantan las plantas del vivero al campo"
                 )
                 area_cafe_proy = c2.number_input(
                     "Area a sembrar (ha)",
                     min_value=0.1, max_value=500.0,
-                    value=float(round(r['area_ha'], 2)), step=0.1
+                    value=float(round(r['area_ha'], 2)), step=0.1,
+                    help="Hectareas que se van a sembrar. "
+                         "Por defecto usa el area del poligono analizado."
                 )
 
-                proyeccion = proyectar_3_anios(
+                # Fila 2: Modo de calculo de plantas
+                st.markdown("**Cantidad de plantas**")
+                modo_plantas = st.radio(
+                    "Calcular plantas por:",
+                    ["Densidad de siembra (plantas/ha)",
+                     "Numero exacto de plantas que conozco"],
+                    horizontal=True,
+                    help="Si ya sabes cuantas plantas tienes o planeas sembrar, "
+                         "ingresa el numero exacto. Si no, usa la densidad."
+                )
+
+                c3, c4 = st.columns(2)
+                if "Densidad" in modo_plantas:
+                    densidad = c3.selectbox(
+                        "Densidad de siembra",
+                        options=[1600, 2000, 2500, 3000, 4000, 5000],
+                        index=2,
+                        format_func=lambda x: f"{x:,} plantas/ha",
+                        help=(
+                            "Distanciamiento tipico en Honduras:\n"
+                            "1600 plantas/ha = 3.0m × 2.0m (tradicional)\n"
+                            "2000 plantas/ha = 2.5m × 2.0m\n"
+                            "2500 plantas/ha = 2.0m × 2.0m (semi-intensivo)\n"
+                            "3000 plantas/ha = 2.0m × 1.67m\n"
+                            "5000 plantas/ha = 1.5m × 1.33m (intensivo)"
+                        )
+                    )
+                    total_plantas_calc = int(area_cafe_proy * densidad)
+                    densidad_real      = densidad
+                else:
+                    total_plantas_manual = c3.number_input(
+                        "Numero de plantas",
+                        min_value=10, max_value=500000,
+                        value=int(area_cafe_proy * 2500), step=100,
+                        help="Numero total de plantas que tienes o planeas sembrar"
+                    )
+                    total_plantas_calc = total_plantas_manual
+                    densidad_real = round(total_plantas_manual / area_cafe_proy) \
+                                    if area_cafe_proy > 0 else 2500
+
+                # Distancia equivalente
+                import math
+                dist_equiv = round(math.sqrt(10000 / densidad_real), 2) \
+                             if densidad_real > 0 else 0
+
+                # Resumen de la siembra
+                st.info(
+                    f"Total de plantas: **{total_plantas_calc:,} plantas** | "
+                    f"Densidad: **{densidad_real:,} plantas/ha** | "
+                    f"Area: **{area_cafe_proy:.2f} ha** | "
+                    f"Distanciamiento equiv.: **{dist_equiv:.1f}m × {dist_equiv:.1f}m**"
+                )
+
+                proyeccion, total_pl, qq_planta_plena = proyectar_3_anios(
                     rend['pred_ens'], area_cafe_proy,
-                    r['dept_ref'], int(anio_siembra)
+                    r['dept_ref'], int(anio_siembra),
+                    plantas_por_ha=densidad_real
                 )
                 df_proy = pd.DataFrame(proyeccion)
 
@@ -1159,7 +1263,7 @@ reales de tu zona y mostrara resultados aqui.
                 ax_p.set_xlabel('Año de cosecha')
                 ax_p.set_title(
                     f'Proyeccion de Rendimiento — Siembra {int(anio_siembra)} | '
-                    f'{area_cafe_proy:.2f} ha',
+                    f'{area_cafe_proy:.2f} ha | {total_plantas_calc:,} plantas',
                     fontweight='bold', color='#1F3864'
                 )
                 ax_p.legend(fontsize=8)
@@ -1182,14 +1286,21 @@ reales de tu zona y mostrara resultados aqui.
 
                 # Resumen
                 total_3 = sum(p['Produccion est. (qq)'] for p in proyeccion[1:4])
+                # Produccion a plena maduracion (año 5)
+                plena = proyeccion[4]
                 st.info(
-                    f"**Produccion acumulada primeros 3 años comerciales "
-                    f"(año {int(anio_siembra)+1} al {int(anio_siembra)+3}):** "
-                    f"**{total_3:,.0f} qq oro** sobre {area_cafe_proy:.2f} ha"
+                    f"**Produccion acumulada primeros 3 anos comerciales "
+                    f"(ano {int(anio_siembra)+1} al {int(anio_siembra)+3}):** "
+                    f"**{total_3:,.0f} qq oro** sobre {area_cafe_proy:.2f} ha\n\n"
+                    f"**A produccion plena (ano {int(anio_siembra)+4}):** "
+                    f"{plena['Rendimiento (qq/ha)']:.1f} qq/ha | "
+                    f"{plena['Produccion est. (qq)']:.0f} qq totales | "
+                    f"{plena['lb por planta']:.1f} lb/planta"
                 )
                 st.caption(
-                    "Factores de maduracion: Año 1=0%, Año 2=15%, "
-                    "Año 3=50%, Año 4=80%, Año 5=100% | "
+                    "Factores de maduracion: Ano 1=0%, Ano 2=15%, "
+                    "Ano 3=50%, Ano 4=80%, Ano 5=100% | "
+                    "Densidad: " + str(densidad) + " plantas/ha | "
                     "Fuente: IHCAFE Guia Tecnica de Caficultura 2022"
                 )
 
