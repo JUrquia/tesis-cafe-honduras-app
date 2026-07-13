@@ -882,48 +882,121 @@ reales de tu zona y mostrara resultados aqui.
             if clasif['score_final'] < 35:
                 st.warning("Zona no clasificada como cafe. Prediccion no aplica.")
             else:
+                # ── Estimacion proxima cosecha ────────────────────────────
+                import calendar
+                anio_actual    = r['anio']
+                temporada_pred = f"{anio_actual}-{anio_actual+1}"
+
+                # Calcular area de cafe real (del clasificador GEE si existe)
+                area_cafe_ha = r['area_ha']  # default = area total
+                if r.get('dist_clases'):
+                    cafe_clase = next(
+                        (d for d in r['dist_clases'] if d['clase'] == 'Cafe'), None
+                    )
+                    if cafe_clase and cafe_clase['ha'] > 0:
+                        area_cafe_ha = cafe_clase['ha']
+
+                prod_prox     = round(rend['pred_ens'] * area_cafe_ha, 1)
+                prod_prox_lo  = round(rend['ic_lo']   * area_cafe_ha, 1)
+                prod_prox_hi  = round(rend['ic_hi']   * area_cafe_ha, 1)
+
+                # Banner de estimacion
+                st.markdown(f"""
+                <div style='background:#1F3864;color:white;padding:14px 18px;
+                            border-radius:10px;margin-bottom:16px'>
+                    <div style='font-size:13px;opacity:0.8;margin-bottom:4px'>
+                        ESTIMACION PROXIMA COSECHA — Temporada {temporada_pred}
+                    </div>
+                    <div style='font-size:28px;font-weight:bold'>
+                        {prod_prox:,.0f} qq oro
+                    </div>
+                    <div style='font-size:13px;opacity:0.85;margin-top:4px'>
+                        Rango IC 80%: {prod_prox_lo:,.0f} – {prod_prox_hi:,.0f} qq &nbsp;|&nbsp;
+                        Area cafe: {area_cafe_ha:.2f} ha &nbsp;|&nbsp;
+                        {rend['pred_ens']:.1f} qq/ha
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                # Metricas
                 c1, c2 = st.columns(2)
                 c1.metric("Rendimiento predicho",
                           f"{rend['pred_ens']:.2f} qq/ha",
-                          f"IC 80%: {rend['ic_lo']:.1f}-{rend['ic_hi']:.1f}")
-                c2.metric("Produccion estimada",
-                          f"{rend['prod_est']:,.0f} qq oro",
-                          f"en {r['area_ha']:.3f} ha")
+                          f"IC 80%: {rend['ic_lo']:.1f} – {rend['ic_hi']:.1f}")
+                c2.metric(f"Produccion estimada {temporada_pred}",
+                          f"{prod_prox:,.0f} qq oro",
+                          f"en {area_cafe_ha:.2f} ha de cafe")
 
                 c3, c4 = st.columns(2)
-                delta_s = f"+{rend['delta']:.2f}" if rend['delta'] >= 0 else f"{rend['delta']:.2f}"
+                delta_s = f"+{rend['delta']:.2f}" if rend['delta'] >= 0 \
+                          else f"{rend['delta']:.2f}"
                 c3.metric("vs. Media departamental",
                           f"{delta_s} qq/ha",
                           f"Ref {r['dept_ref']}: {rend['hist_dep']:.1f}")
                 c4.metric("Observaciones satelitales",
                           f"{r['n_obs']}",
-                          f"Fuente: {r['fuente_sat']}")
+                          f"Fuente: Sentinel-2")
 
                 st.divider()
-                # Grafico
-                fig, ax = plt.subplots(figsize=(6, 3.2))
+
+                # Grafico comparativo modelos
+                fig, axes = plt.subplots(1, 2, figsize=(11, 3.8))
+                fig.suptitle(
+                    f'Prediccion de Rendimiento — Temporada {temporada_pred}',
+                    fontsize=11, fontweight='bold', color='#1F3864'
+                )
+                fig.patch.set_facecolor('#FAFAFA')
+
+                # Panel izquierdo: RF vs XGB vs Ensemble
                 mods  = ['RF', 'XGB', 'Ensemble\n0.55+0.45']
                 vals  = [rend['pred_rf'], rend['pred_xgb'], rend['pred_ens']]
                 cols_ = ['#2E5FA3', '#8B5E3C', '#1a7a4a']
-                bars  = ax.bar(mods, vals, color=cols_, alpha=0.85,
-                               edgecolor='white', lw=1.5)
-                ax.errorbar(2, rend['pred_ens'],
-                            yerr=[[rend['pred_ens']-rend['ic_lo']],
-                                  [rend['ic_hi']-rend['pred_ens']]],
-                            fmt='none', color='black', capsize=7, lw=2)
-                ax.axhline(rend['hist_dep'], ls='--', color='red', lw=1.5,
-                           label=f"Media {r['dept_ref']} ({rend['hist_dep']:.1f})")
+                bars  = axes[0].bar(mods, vals, color=cols_,
+                                    alpha=0.85, edgecolor='white', lw=1.5)
+                axes[0].errorbar(
+                    2, rend['pred_ens'],
+                    yerr=[[rend['pred_ens']-rend['ic_lo']],
+                          [rend['ic_hi']-rend['pred_ens']]],
+                    fmt='none', color='black', capsize=7, lw=2
+                )
+                axes[0].axhline(
+                    rend['hist_dep'], ls='--', color='red', lw=1.5,
+                    label=f"Media {r['dept_ref']} ({rend['hist_dep']:.1f})"
+                )
                 for bar, v in zip(bars, vals):
-                    ax.text(bar.get_x()+bar.get_width()/2, v+0.3,
-                            f'{v:.1f}', ha='center', fontsize=10, fontweight='bold')
-                ax.set_ylabel('qq oro/ha')
-                ax.set_title('Prediccion por modelo (IC 80%)',
-                             fontweight='bold', color='#1F3864')
-                ax.legend(fontsize=8)
-                ax.grid(axis='y', alpha=0.25)
-                ax.set_ylim(0, max(vals)*1.3)
-                fig.patch.set_facecolor('#FAFAFA')
-                ax.set_facecolor('#FAFAFA')
+                    axes[0].text(
+                        bar.get_x()+bar.get_width()/2, v+0.3,
+                        f'{v:.1f}', ha='center', fontsize=10, fontweight='bold'
+                    )
+                axes[0].set_ylabel('qq oro/ha')
+                axes[0].set_title('Rendimiento por modelo (IC 80%)')
+                axes[0].legend(fontsize=8)
+                axes[0].grid(axis='y', alpha=0.25)
+                axes[0].set_ylim(0, max(vals)*1.35)
+                axes[0].set_facecolor('#FAFAFA')
+
+                # Panel derecho: produccion total con IC
+                etiquetas = ['IC 80%\nInferior', 'Estimacion\nCentral', 'IC 80%\nSuperior']
+                valores_p = [prod_prox_lo, prod_prox, prod_prox_hi]
+                colores_p = ['#AACBE8', '#1F3864', '#AACBE8']
+                bars2 = axes[1].bar(etiquetas, valores_p,
+                                    color=colores_p, alpha=0.85,
+                                    edgecolor='white', lw=1.5)
+                for bar, v in zip(bars2, valores_p):
+                    axes[1].text(
+                        bar.get_x()+bar.get_width()/2, v+0.5,
+                        f'{v:,.0f}', ha='center',
+                        fontsize=10, fontweight='bold', color='#1F3864'
+                    )
+                axes[1].set_ylabel('qq oro')
+                axes[1].set_title(
+                    f'Produccion estimada {temporada_pred}\n'
+                    f'({area_cafe_ha:.2f} ha de cafe)'
+                )
+                axes[1].grid(axis='y', alpha=0.25)
+                axes[1].set_ylim(0, max(valores_p)*1.35)
+                axes[1].set_facecolor('#FAFAFA')
+
                 plt.tight_layout()
                 st.pyplot(fig, use_container_width=True)
                 plt.close()
@@ -932,8 +1005,33 @@ reales de tu zona y mostrara resultados aqui.
                     st.caption(
                         f"Tmax media: {r['clima']['tmax_mean']:.1f}C | "
                         f"Precip. anual: {r['clima']['precip_anual']:.0f} mm "
-                        f"(NASA POWER, {r['anio']})"
+                        f"(NASA POWER {r['anio']}) | "
+                        f"Ensemble: {W_RF}×RF + {W_XGB}×XGB"
                     )
+
+                # Descarga rapida de la estimacion
+                csv_rend = pd.DataFrame([{
+                    'zona':            r['nombre'],
+                    'temporada':       temporada_pred,
+                    'area_cafe_ha':    area_cafe_ha,
+                    'pred_rf_qq_ha':   rend['pred_rf'],
+                    'pred_xgb_qq_ha':  rend['pred_xgb'],
+                    'pred_ens_qq_ha':  rend['pred_ens'],
+                    'ic80_inf_qq_ha':  rend['ic_lo'],
+                    'ic80_sup_qq_ha':  rend['ic_hi'],
+                    'prod_est_qq':     prod_prox,
+                    'prod_ic80_inf':   prod_prox_lo,
+                    'prod_ic80_sup':   prod_prox_hi,
+                    'media_dept_qq_ha':rend['hist_dep'],
+                    'dept_ref':        r['dept_ref'],
+                }]).to_csv(index=False).encode('utf-8')
+
+                st.download_button(
+                    f"Descargar estimacion {temporada_pred} (.csv)",
+                    csv_rend,
+                    f"estimacion_{r['nombre'].replace(' ','_')}_{temporada_pred}.csv",
+                    "text/csv"
+                )
 
         # ── TAB 3: Indices reales ─────────────────────────────────────────
         with tab3:
