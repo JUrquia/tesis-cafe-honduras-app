@@ -672,8 +672,10 @@ reales de tu zona y mostrara resultados aqui.
             unsafe_allow_html=True
         )
 
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "Clasificacion", "Rendimiento", "Indices", "Reporte"
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+            "Clasificacion", "Rendimiento", "Indices",
+            "Proyeccion 3 Anos", "Siembra Nueva", "Danos y Plagas",
+            "Reporte"
         ])
 
         # ── TAB 1: Clasificacion ──────────────────────────────────────────
@@ -866,8 +868,327 @@ reales de tu zona y mostrara resultados aqui.
                 st.dataframe(pd.DataFrame(stats_rows),
                              use_container_width=True, hide_index=True)
 
-        # ── TAB 4: Reporte ────────────────────────────────────────────────
+        # ── TAB 4: Proyeccion 3 Anos ──────────────────────────────────────
         with tab4:
+            st.markdown("**Proyeccion de produccion — cafe nuevo del vivero**")
+            st.caption(
+                "Si se siembra café este año, esta tabla muestra la produccion "
+                "esperada en cada uno de los proximos 5 años segun los factores "
+                "de maduracion calibrados con datos IHCAFE Honduras."
+            )
+
+            if clasif['score_final'] < 35:
+                st.warning("Zona no clasificada como cafe. Proyeccion no aplica.")
+            else:
+                c1, c2 = st.columns(2)
+                anio_siembra = c1.number_input(
+                    "Año de siembra (salida del vivero)",
+                    min_value=2020, max_value=2030,
+                    value=r['anio'], step=1
+                )
+                area_cafe_proy = c2.number_input(
+                    "Area a sembrar (ha)",
+                    min_value=0.1, max_value=500.0,
+                    value=float(round(r['area_ha'], 2)), step=0.1
+                )
+
+                proyeccion = proyectar_3_anios(
+                    rend['pred_ens'], area_cafe_proy,
+                    r['dept_ref'], int(anio_siembra)
+                )
+                df_proy = pd.DataFrame(proyeccion)
+
+                # Grafico de barras de la proyeccion
+                fig_p, ax_p = plt.subplots(figsize=(9, 4))
+                colores_p = ['#d5d8dc','#aed6f1','#2E5FA3','#1a5276','#1a7a4a']
+                bars_p = ax_p.bar(
+                    [str(p['Anio']) for p in proyeccion],
+                    [p['Rendimiento (qq/ha)'] for p in proyeccion],
+                    color=colores_p, alpha=0.88,
+                    edgecolor='white', lw=1.5
+                )
+                ax_p.axhline(
+                    rend['hist_dep'], ls='--', color='red', lw=1.5,
+                    label=f"Media hist. {r['dept_ref']} ({rend['hist_dep']:.1f} qq/ha)"
+                )
+                ax_p.axhline(
+                    rend['pred_ens'], ls=':', color='#2E5FA3', lw=1.5,
+                    label=f"Prediccion actual ({rend['pred_ens']:.1f} qq/ha)"
+                )
+                for bar, p in zip(bars_p, proyeccion):
+                    v = p['Rendimiento (qq/ha)']
+                    if v > 0:
+                        ax_p.text(
+                            bar.get_x() + bar.get_width()/2, v + 0.3,
+                            f"{v:.1f}", ha='center',
+                            fontsize=9, fontweight='bold'
+                        )
+                ax_p.set_ylabel('qq oro/ha')
+                ax_p.set_xlabel('Año de cosecha')
+                ax_p.set_title(
+                    f'Proyeccion de Rendimiento — Siembra {int(anio_siembra)} | '
+                    f'{area_cafe_proy:.2f} ha',
+                    fontweight='bold', color='#1F3864'
+                )
+                ax_p.legend(fontsize=8)
+                ax_p.grid(axis='y', alpha=0.25)
+                fig_p.patch.set_facecolor('#FAFAFA')
+                ax_p.set_facecolor('#FAFAFA')
+                plt.tight_layout()
+                st.pyplot(fig_p, use_container_width=True)
+                plt.close()
+
+                # Tabla detallada
+                st.markdown("**Detalle por año:**")
+                st.dataframe(
+                    df_proy.style.background_gradient(
+                        subset=['Rendimiento (qq/ha)', 'Produccion est. (qq)'],
+                        cmap='Blues'
+                    ),
+                    use_container_width=True, hide_index=True
+                )
+
+                # Resumen
+                total_3 = sum(p['Produccion est. (qq)'] for p in proyeccion[1:4])
+                st.info(
+                    f"**Produccion acumulada primeros 3 años comerciales "
+                    f"(año {int(anio_siembra)+1} al {int(anio_siembra)+3}):** "
+                    f"**{total_3:,.0f} qq oro** sobre {area_cafe_proy:.2f} ha"
+                )
+                st.caption(
+                    "Factores de maduracion: Año 1=0%, Año 2=15%, "
+                    "Año 3=50%, Año 4=80%, Año 5=100% | "
+                    "Fuente: IHCAFE Guia Tecnica de Caficultura 2022"
+                )
+
+                # Descarga
+                csv_proy = df_proy.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "Descargar proyeccion CSV",
+                    csv_proy,
+                    f"proyeccion_{r['nombre'].replace(' ','_')}_{int(anio_siembra)}.csv",
+                    use_container_width=False
+                )
+
+        # ── TAB 5: Deteccion de Siembra Nueva ────────────────────────────
+        with tab5:
+            st.markdown("**Deteccion de siembra nueva de cafe**")
+            st.caption(
+                "Analiza el perfil espectral actual para determinar si "
+                "hay evidencia de cafe recien sembrado (salido del vivero). "
+                "Util para detectar expansion de la caficultura en una zona."
+            )
+
+            ndvi_anterior = st.number_input(
+                "NDVI promedio del año ANTERIOR (opcional — para comparacion)",
+                min_value=0.0, max_value=1.0,
+                value=0.0, step=0.01,
+                help="Si tienes el NDVI de la misma zona del año anterior, "
+                     "ingrésalo aquí para mejorar la deteccion. "
+                     "Deja en 0.0 si no lo tienes."
+            )
+
+            siembra = detectar_siembra_nueva(
+                df_ts,
+                clasif['ndvi_prom']
+            )
+
+            # Resultado principal
+            color_s = '#1a7a4a' if siembra['es_siembra_nueva'] else '#888888'
+            icono_s = 'POSIBLE SIEMBRA NUEVA' if siembra['es_siembra_nueva'] \
+                      else 'SIN EVIDENCIA DE SIEMBRA NUEVA'
+
+            st.markdown(f"""
+            <div style='padding:14px;background:{color_s}18;
+                        border-left:6px solid {color_s};
+                        border-radius:8px;margin-bottom:14px'>
+                <div style='font-size:18px;font-weight:bold;color:{color_s}'>
+                    {icono_s}
+                </div>
+                <div style='font-size:14px;color:{color_s};margin-top:4px'>
+                    Confianza: <b>{siembra['confianza']}%</b>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown("**Evidencias encontradas:**")
+            for ev in siembra['evidencias']:
+                st.markdown(f"- {ev}")
+
+            st.divider()
+            st.markdown(f"**Recomendacion:** {siembra['recomendacion']}")
+            st.divider()
+
+            # Visualizacion del perfil NDVI
+            if 'NDVI_SG' in df_ts.columns:
+                fig_s, ax_s = plt.subplots(figsize=(9, 3.5))
+                ax_s.plot(df_ts['fecha'], df_ts['NDVI_SG'],
+                          color='#2E5FA3', lw=2.2, label='NDVI SG actual')
+                if 'NDVI_mean' in df_ts.columns:
+                    ax_s.scatter(df_ts['fecha'], df_ts['NDVI_mean'],
+                                 alpha=0.25, s=10, color='#2E5FA3')
+                ax_s.axhspan(0.28, 0.52, alpha=0.12, color='#27ae60',
+                             label='Rango cafe joven (0.28-0.52)')
+                ax_s.axhspan(0.52, 0.75, alpha=0.08, color='#2E5FA3',
+                             label='Rango cafe adulto (0.52-0.75)')
+                ax_s.set_ylabel('NDVI')
+                ax_s.set_title('Perfil NDVI — Deteccion de siembra nueva',
+                               fontweight='bold', color='#1F3864')
+                ax_s.xaxis.set_major_formatter(mdates.DateFormatter('%b'))
+                ax_s.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+                ax_s.grid(alpha=0.2)
+                ax_s.legend(fontsize=8)
+                ax_s.set_ylim(0, 1.0)
+                fig_s.patch.set_facecolor('#FAFAFA')
+                ax_s.set_facecolor('#FAFAFA')
+                plt.tight_layout()
+                st.pyplot(fig_s, use_container_width=True)
+                plt.close()
+
+            st.info(
+                "**Nota metodologica:** La deteccion de siembra nueva es mas "
+                "precisa cuando se compara el NDVI actual con el del año anterior. "
+                "Un aumento de NDVI de 0.10-0.35 entre años consecutivos, "
+                "combinado con NDVI actual en rango 0.28-0.52, "
+                "es la señal mas clara de establecimiento de cafe."
+            )
+
+        # ── TAB 6: Danos y Plagas ─────────────────────────────────────────
+        with tab6:
+            st.markdown("**Deteccion de daños y plagas post-cosecha**")
+            st.caption(
+                "Analiza las firmas espectrales de los indices para detectar "
+                "señales de roya, estres hidrico, defoliacion y otros daños. "
+                "Basado en la respuesta espectral caracteristica de cada "
+                "tipo de afectacion en Coffea arabica."
+            )
+
+            danos = detectar_danos(
+                clasif['ndvi_prom'],
+                clasif['evi_prom'],
+                clasif['ndre_prom'],
+                clasif['ndwi_prom'],
+                clasif['ndvi_amp']
+            )
+
+            # Nivel de alerta principal
+            nivel_icons = {
+                'NORMAL':   '✅ CULTIVO SALUDABLE',
+                'ATENCION': '⚠️ ATENCION REQUERIDA',
+                'ALERTA':   '🚨 ALERTA',
+                'CRITICO':  '🚨 ESTADO CRITICO',
+            }
+            st.markdown(f"""
+            <div style='padding:14px;background:{danos['color']}18;
+                        border-left:6px solid {danos['color']};
+                        border-radius:8px;margin-bottom:14px'>
+                <div style='font-size:18px;font-weight:bold;
+                            color:{danos['color']}'>
+                    {nivel_icons.get(danos['nivel'], danos['nivel'])}
+                </div>
+                <div style='font-size:13px;color:{danos['color']};
+                            margin-top:4px'>
+                    {danos['n_alertas']} alerta(s) detectada(s)
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Detalle de cada alerta
+            for alerta in danos['alertas']:
+                with st.expander(
+                    f"**{alerta['tipo']}**",
+                    expanded=(alerta['color'] != '#1a7a4a')
+                ):
+                    st.markdown(f"**Detalle:** {alerta['detalle']}")
+                    st.markdown(f"**Accion recomendada:** {alerta['accion']}")
+
+            st.divider()
+
+            # Grafico radar de indices
+            fig_d, ax_d = plt.subplots(figsize=(9, 4))
+
+            # Barras de los indices vs umbrales de alerta
+            indices_nombres = ['NDVI', 'EVI', 'NDRE', 'NDWI (+0.5)', 'Amplitud']
+            valores_obs = [
+                clasif['ndvi_prom'],
+                clasif['evi_prom'],
+                clasif['ndre_prom'],
+                clasif['ndwi_prom'] + 0.5,
+                clasif['ndvi_amp'],
+            ]
+            umbrales_min = [0.40, 0.22, 0.30, 0.35, 0.10]
+            umbrales_max = [0.75, 0.50, 0.55, 0.65, 0.45]
+
+            x_pos = np.arange(len(indices_nombres))
+            bars_d = ax_d.bar(x_pos, valores_obs,
+                              color=['#c0392b' if (v < mn or v > mx) else '#2E5FA3'
+                                     for v, mn, mx in
+                                     zip(valores_obs, umbrales_min, umbrales_max)],
+                              alpha=0.8, edgecolor='white', lw=1.5)
+
+            # Lineas de umbral
+            for xi, (mn, mx) in enumerate(zip(umbrales_min, umbrales_max)):
+                ax_d.plot([xi-0.4, xi+0.4], [mn, mn],
+                          'g--', lw=1.5, alpha=0.7)
+                ax_d.plot([xi-0.4, xi+0.4], [mx, mx],
+                          'r--', lw=1.5, alpha=0.7)
+
+            ax_d.set_xticks(x_pos)
+            ax_d.set_xticklabels(indices_nombres)
+            ax_d.set_ylabel('Valor del indice')
+            ax_d.set_title(
+                'Indices espectrales vs umbrales de alerta\n'
+                '(Rojo = fuera de rango cafe saludable)',
+                fontweight='bold', color='#1F3864'
+            )
+            ax_d.set_ylim(0, 1.0)
+            ax_d.grid(axis='y', alpha=0.25)
+            from matplotlib.lines import Line2D
+            legend_items = [
+                Line2D([0],[0], color='g', ls='--', label='Umbral minimo cafe'),
+                Line2D([0],[0], color='r', ls='--', label='Umbral maximo cafe'),
+                plt.Rectangle((0,0),1,1, color='#2E5FA3',
+                               alpha=0.8, label='En rango normal'),
+                plt.Rectangle((0,0),1,1, color='#c0392b',
+                               alpha=0.8, label='Fuera de rango'),
+            ]
+            ax_d.legend(handles=legend_items, fontsize=8, loc='upper right')
+            fig_d.patch.set_facecolor('#FAFAFA')
+            ax_d.set_facecolor('#FAFAFA')
+            plt.tight_layout()
+            st.pyplot(fig_d, use_container_width=True)
+            plt.close()
+
+            # Tabla de firmas espectrales de referencia
+            st.divider()
+            st.markdown("**Referencia: Firmas espectrales por tipo de daño**")
+            ref_danos = pd.DataFrame([
+                {'Tipo de daño':     'Roya (Hemileia vastatrix)',
+                 'Indice clave':     'NDRE cae antes que NDVI',
+                 'Umbral':           'NDRE/NDVI < 0.62',
+                 'Mecanismo':        'Destruccion de clorofila foliar'},
+                {'Tipo de daño':     'Sequia / Estres hidrico',
+                 'Indice clave':     'NDWI',
+                 'Umbral':           'NDWI < -0.15',
+                 'Mecanismo':        'Deficit de agua en el dosel'},
+                {'Tipo de daño':     'Defoliacion severa',
+                 'Indice clave':     'NDVI + EVI + NDRE bajos',
+                 'Umbral':           '2 o mas indices bajo minimo',
+                 'Mecanismo':        'Perdida de follaje por plaga o enfermedad'},
+                {'Tipo de daño':     'Daño irregular / Parches',
+                 'Indice clave':     'Amplitud NDVI',
+                 'Umbral':           'Amplitud > 0.45',
+                 'Mecanismo':        'Variabilidad espacial por daño localizado'},
+            ])
+            st.dataframe(ref_danos, use_container_width=True, hide_index=True)
+            st.caption(
+                "Firmas espectrales basadas en: Gao (1996) NDWI; "
+                "Frampton et al. (2013) Red Edge para hongos; "
+                "Sentinel-2 Application Note — Crop Stress Detection."
+            )
+
+        # ── TAB 7: Reporte ────────────────────────────────────────────────
+        with tab7:
             st.markdown("**Resumen del analisis**")
 
             reporte = f"""REPORTE DE ANALISIS — {r['nombre']}
@@ -990,3 +1311,138 @@ st.caption(
     "via Google Earth Engine | Resolucion 10m | Mascara de nubes SCL | "
     "Savitzky-Golay w=7 m=2 | Tesis UNAH"
 )
+
+# ════════════════════════════════════════════════════════════════
+# FUNCIONES MODULOS EVALUADOR (agregadas al final)
+# ════════════════════════════════════════════════════════════════
+
+def proyectar_3_anios(pred_ens, area_ha, dept, anio_siembra):
+    factores = {
+        anio_siembra:     0.00,
+        anio_siembra + 1: 0.15,
+        anio_siembra + 2: 0.50,
+        anio_siembra + 3: 0.80,
+        anio_siembra + 4: 1.00,
+    }
+    base_plena = pred_ens
+    hist_dep   = IHCAFE_REF.get(dept, 20.0)
+    fases      = ['Establecimiento','Primera floracion',
+                  'Primera cosecha comercial',
+                  'Produccion en desarrollo','Produccion plena']
+    proyeccion = []
+    for idx, (anio, factor) in enumerate(factores.items()):
+        rend_anio = round(base_plena * factor, 2)
+        prod_anio = round(rend_anio * area_ha, 1)
+        proyeccion.append({
+            'Anio':                   anio,
+            'Fase':                   fases[idx],
+            'Factor maduracion':      f'{int(factor*100)}%',
+            'Rendimiento (qq/ha)':    rend_anio,
+            'Produccion est. (qq)':   prod_anio,
+            'vs Media dept (qq/ha)':  round(rend_anio - hist_dep, 2),
+        })
+    return proyeccion
+
+
+def detectar_siembra_nueva(df_ts, ndvi_prom):
+    resultado = {'es_siembra_nueva':False,'confianza':0,
+                 'evidencias':[],'recomendacion':''}
+    if 0.28 <= ndvi_prom <= 0.52:
+        resultado['evidencias'].append(
+            f'NDVI ({ndvi_prom:.3f}) en rango de cafe joven (0.28-0.52)')
+        resultado['confianza'] += 35
+    if 'NDVI_SG' in df_ts.columns:
+        ndvi_sg = df_ts['NDVI_SG'].dropna()
+        if len(ndvi_sg) >= 6:
+            amp = float(ndvi_sg.max() - ndvi_sg.min()) if len(ndvi_sg)>1 else 0
+            if 0.05 <= amp <= 0.18:
+                resultado['evidencias'].append(
+                    f'Amplitud NDVI baja ({amp:.3f}) — planta en desarrollo')
+                resultado['confianza'] += 25
+            primera = float(ndvi_sg.iloc[:len(ndvi_sg)//2].mean())
+            segunda = float(ndvi_sg.iloc[len(ndvi_sg)//2:].mean())
+            if segunda > primera + 0.04:
+                resultado['evidencias'].append(
+                    f'Tendencia creciente ({primera:.3f} a {segunda:.3f})')
+                resultado['confianza'] += 25
+    resultado['confianza'] = min(100, resultado['confianza'])
+    resultado['es_siembra_nueva'] = resultado['confianza'] >= 50
+    if resultado['confianza'] >= 70:
+        resultado['recomendacion'] = (
+            'Alta probabilidad de siembra nueva. Registrar en catastro IHCAFE.')
+    elif resultado['confianza'] >= 50:
+        resultado['recomendacion'] = (
+            'Posible siembra nueva. Comparar con imagenes del ano anterior.')
+    else:
+        resultado['recomendacion'] = 'No se detecta patron de siembra nueva.'
+    if not resultado['evidencias']:
+        resultado['evidencias'].append(
+            f'NDVI ({ndvi_prom:.3f}) fuera del rango de cafe joven')
+    return resultado
+
+
+def detectar_danos(ndvi_prom, evi_prom, ndre_prom, ndwi_prom, ndvi_amp):
+    alertas = []
+    nivel   = 'NORMAL'
+    color_n = '#1a7a4a'
+
+    ratio = ndre_prom / ndvi_prom if ndvi_prom > 0 else 0
+    if ratio < 0.62:
+        alertas.append({
+            'tipo':   'Posible Roya (Hemileia vastatrix)',
+            'color':  '#c0392b',
+            'detalle':f'NDRE/NDVI={ratio:.3f} (<0.62). Caida del Red Edge '
+                       f'antes que NDVI — firma espectral de infeccion fungica. '
+                       f'NDRE={ndre_prom:.3f}, NDVI={ndvi_prom:.3f}',
+            'accion': 'Aplicar fungicida preventivo. Inspeccionar haz y enves de hojas.',
+        })
+        nivel = 'ALERTA'; color_n = '#c0392b'
+
+    if ndwi_prom < -0.15:
+        alertas.append({
+            'tipo':   'Estres hidrico',
+            'color':  '#E87722',
+            'detalle':f'NDWI={ndwi_prom:.3f} (<-0.15). Deficit de agua '
+                       f'en el dosel. Posible sequia o problema de irrigacion.',
+            'accion': 'Verificar disponibilidad de agua en la zona.',
+        })
+        if nivel == 'NORMAL': nivel = 'ATENCION'; color_n = '#E87722'
+
+    indices_bajos = sum([ndvi_prom<0.40, evi_prom<0.22, ndre_prom<0.30])
+    if indices_bajos >= 2:
+        alertas.append({
+            'tipo':   'Defoliacion o perdida de follaje',
+            'color':  '#922b21',
+            'detalle':f'Multiples indices bajos: NDVI={ndvi_prom:.3f}, '
+                       f'EVI={evi_prom:.3f}, NDRE={ndre_prom:.3f}. '
+                       f'Patron de defoliacion severa o daño post-cosecha.',
+            'accion': 'Inspeccion urgente de campo.',
+        })
+        nivel = 'CRITICO'; color_n = '#922b21'
+
+    if ndvi_amp > 0.45:
+        alertas.append({
+            'tipo':   'Variabilidad espectral alta',
+            'color':  '#E87722',
+            'detalle':f'Amplitud NDVI={ndvi_amp:.3f} (>0.45). '
+                       f'Posible daño irregular o parches de plaga.',
+            'accion': 'Mapear zonas de mayor variabilidad para inspeccion.',
+        })
+        if nivel == 'NORMAL': nivel = 'ATENCION'; color_n = '#E87722'
+
+    if not alertas:
+        alertas.append({
+            'tipo':   'Sin alertas — cultivo saludable',
+            'color':  '#1a7a4a',
+            'detalle':f'Todos los indices en rango normal. '
+                       f'NDVI={ndvi_prom:.3f}, EVI={evi_prom:.3f}, '
+                       f'NDRE={ndre_prom:.3f}, NDWI={ndwi_prom:.3f}',
+            'accion': 'Continuar monitoreo regular cada 30 dias.',
+        })
+
+    return {
+        'alertas':  alertas,
+        'nivel':    nivel,
+        'color':    color_n,
+        'n_alertas':len([a for a in alertas if 'saludable' not in a['tipo']]),
+    }

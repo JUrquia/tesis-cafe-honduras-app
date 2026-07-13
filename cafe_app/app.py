@@ -1062,4 +1062,4 @@ elif pagina == "ℹ️ Acerca del Sistema":
     **Proyecto GEE:** `tesis-cafe-honduras`
     """)
 
-    st.caption("Tesis de Posgrado — UNAH | Gerencia de Tecnologías de la Información | 2025-2026")
+    st.caption("Tesis — UNAH")
