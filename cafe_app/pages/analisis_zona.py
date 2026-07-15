@@ -453,13 +453,17 @@ def clasificar_zona(df_ts, elev_mean, apto_altitud):
 
     es_ladera_pronunciada = slope_mean > 15.0   # pendiente > 15°
 
-    # Sistema con sombra: NDVI alto + NDRE activo + pendiente
-    # NDRE > 0.42 confirma actividad fisiologica real (cafe, no solo arbol)
+    # Sistema con sombra: NDVI alto + NDRE activo + ALTA VARIACION + pendiente
+    # Diferenciador clave vs bosque humedo: AMPLITUD >= 0.18
+    # El cafe bajo sombra pierde follaje en cosecha (nov-ene) → alta variacion
+    # El bosque humedo permanece verde todo el año → amp < 0.15
+    # Pendiente >= 8° confirma sistema agroforestal en ladera (Honduras)
     es_cafe_sombra = (
         0.60 <= ndvi_prom <= 0.88 and
         ndre_prom >= 0.42 and          # NDRE activo — diferencia cafe de bosque
         evi_prom  <= 0.65 and          # EVI no tan alto como bosque denso puro
-        ndvi_amp  >= 0.08              # algo de variacion estacional
+        ndvi_amp  >= 0.18 and          # variacion real de cosecha — clave
+        slope_mean >= 8.0              # ladera minima para sistema con sombra
     )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -467,10 +471,9 @@ def clasificar_zona(df_ts, elev_mean, apto_altitud):
     # ─────────────────────────────────────────────────────────────────────────
     if es_cafe_sombra:
         # Umbrales ampliados para cafe bajo sombra / sistemas agroforestales
-        # Referencia: Medina et al. (2026), Maskell et al. (2021)
         reglas = {
             'NDVI cafe+sombra [0.40-0.88]':  0.40 <= ndvi_prom <= 0.88,
-            'Amplitud NDVI >= 0.08':          ndvi_amp   >= 0.08,
+            'Amplitud NDVI >= 0.18':          ndvi_amp   >= 0.18,
             'EVI cafe+sombra [0.20-0.62]':   0.20 <= evi_prom   <= 0.62,
             'GNDVI cafe+sombra [0.30-0.75]': 0.30 <= gndvi_prom <= 0.75,
             'SAVI cafe [0.25-0.58]':         0.25 <= savi_prom  <= 0.58,
@@ -506,6 +509,15 @@ def clasificar_zona(df_ts, elev_mean, apto_altitud):
         evi_prom  > 0.62 and
         ndvi_amp  < 0.08
     )
+    # Bosque humedo / vegetacion densa plana:
+    # EVI > 0.52 + NDWI > 0.16 + poca pendiente + sin ser cafe sombra
+    # Cubre el caso de zona plana con vegetacion densa que no es cafe
+    es_bosque_humedo = (
+        evi_prom  > 0.52 and
+        ndwi_prom > 0.16 and
+        slope_mean < 8.0 and
+        not es_cafe_sombra
+    )
     # Matorral: NDRE bajo (<0.35) + EVI bajo (<0.38) pero NDVI moderado
     es_matorral = (
         0.45 <= ndvi_prom <= 0.62 and
@@ -522,6 +534,8 @@ def clasificar_zona(df_ts, elev_mean, apto_altitud):
     penalizacion = 0.0
     if es_bosque_puro:
         penalizacion += 20.0
+    if es_bosque_humedo:
+        penalizacion += 20.0   # NUEVO — bosque humedo plano
     if es_matorral:
         penalizacion += 15.0
     if es_zona_plana_sin_variacion:
