@@ -332,19 +332,68 @@ with col_mapa:
 # ════════════════════════════════════════════════════════════════
 
 def get_nasa_power(lat, lon, anio):
-    url    = 'https://power.larc.nasa.gov/api/temporal/daily/point'
+    """
+    Descarga datos climaticos de NASA POWER.
+    Si el ano es el actual o futuro, usa el ano anterior disponible.
+    Filtra valores invalidos (-999) que NASA POWER devuelve para
+    fechas sin datos completos.
+    """
+    from datetime import date
+
+    # NASA POWER tiene datos con ~2 meses de retraso
+    # Para años actuales/futuros usar el año anterior completo
+    anio_actual = date.today().year
+    anio_consulta = anio
+    aviso_anio = None
+
+    if anio >= anio_actual:
+        anio_consulta = anio_actual - 1
+        aviso_anio = (
+            f"NASA POWER no tiene datos completos para {anio}. "
+            f"Usando climatologia de {anio_consulta} como referencia."
+        )
+
+    url = 'https://power.larc.nasa.gov/api/temporal/daily/point'
     params = {
         'parameters': 'T2M_MAX,T2M_MIN,PRECTOTCORR',
-        'community': 'AG', 'longitude': lon, 'latitude': lat,
-        'start': f'{anio}0101', 'end': f'{anio}1231', 'format': 'JSON'
+        'community':  'AG',
+        'longitude':  lon,
+        'latitude':   lat,
+        'start':      f'{anio_consulta}0101',
+        'end':        f'{anio_consulta}1231',
+        'format':     'JSON'
     }
     try:
         r  = requests.get(url, params=params, timeout=25)
         df = pd.DataFrame(r.json()['properties']['parameter'])
         df.index = pd.to_datetime(df.index, format='%Y%m%d')
-        return df.reset_index(names='fecha')
-    except:
-        return None
+        df = df.reset_index(names='fecha')
+
+        # NASA POWER usa -999 como valor nulo — filtrar antes de calcular
+        for col in ['T2M_MAX', 'T2M_MIN', 'PRECTOTCORR']:
+            if col in df.columns:
+                df[col] = df[col].replace(-999, np.nan)
+                df[col] = df[col].replace(-999.0, np.nan)
+                # Filtrar valores fisicamente imposibles para Honduras
+                if 'T2M' in col:
+                    df[col] = df[col].where(
+                        (df[col] > 5.0) & (df[col] < 45.0), np.nan
+                    )
+                if 'PREC' in col:
+                    df[col] = df[col].where(
+                        (df[col] >= 0.0) & (df[col] < 200.0), np.nan
+                    )
+
+        # Verificar que los datos son validos
+        tmax_media = df['T2M_MAX'].mean() if 'T2M_MAX' in df.columns else np.nan
+        if np.isnan(tmax_media) or tmax_media < 10 or tmax_media > 42:
+            # Datos invalidos — usar valores climatologicos de La Paz como referencia
+            return None, aviso_anio
+
+        return df, aviso_anio
+
+    except Exception:
+        return None, aviso_anio
 
 
 def clasificar_zona(df_ts, elev_mean, apto_altitud):
@@ -397,48 +446,58 @@ def clasificar_zona(df_ts, elev_mean, apto_altitud):
     # Indicadores adicionales de NO cafe (penalizan el score)
     es_bosque_denso = (ndvi_prom > 0.75 or evi_prom > 0.50 or
                        gndvi_prom > 0.65 or ndre_prom > 0.55)
-    es_zona_baja    = ndvi_amp < 0.08   # bosque maduro cambia poco
-    penalizacion    = 0.0
+    es_zona_baja    = ndvi_amp < 0.08   # poca variacion = bosque maduro
+    # NUEVO: vegetacion arbustiva/matorral a media altitud
+    # NDVI ~0.50-0.55 + NDRE bajo (<0.35) + NDWI positivo = no es cafe
+    es_matorral = (0.45 <= ndvi_prom <= 0.60 and
+                   ndre_prom < 0.35 and
+                   ndwi_prom > 0.05)
+
+    penalizacion = 0.0
     if es_bosque_denso:
-        penalizacion += 25.0   # penalizar si indices apuntan a bosque denso
+        penalizacion += 25.0
     if es_zona_baja:
-        penalizacion += 10.0   # poca variacion estacional = no es cafe
+        penalizacion += 10.0
+    if es_matorral:
+        penalizacion += 15.0  # penalizar vegetacion ambigua sin firma cafe
 
     # ─────────────────────────────────────────────────────────────────────────
-    # NIVEL 2: Random Forest con muestras mas representativas de Honduras
-    # Muestras calibradas con valores tipicos de cada clase en la region
+    # NIVEL 2: Random Forest — 5 clases para mejor discriminacion
+    # Incluye clase de vegetacion arbustiva/secundaria que confunde con cafe
     # ─────────────────────────────────────────────────────────────────────────
     np.random.seed(42)
     n_ref = 500
     rows  = []
 
-    # Cafe arabica Honduras (800-1800 msnm): NDVI moderado, variacion media
+    # Clase 1: Cafe arabica Honduras (800-1800 msnm)
+    # NDRE activo (>0.40), variacion estacional clara, EVI moderado
     rows.append(pd.DataFrame({
-        'ndvi':  np.random.normal(0.58, 0.07, n_ref),   # 0.44-0.72
+        'ndvi':  np.random.normal(0.58, 0.07, n_ref),
         'gndvi': np.random.normal(0.52, 0.06, n_ref),
-        'evi':   np.random.normal(0.38, 0.06, n_ref),   # 0.20-0.50
+        'evi':   np.random.normal(0.38, 0.06, n_ref),
         'ndwi':  np.random.normal(-0.03, 0.07, n_ref),
         'savi':  np.random.normal(0.42, 0.06, n_ref),
-        'ndre':  np.random.normal(0.46, 0.06, n_ref),   # 0.28-0.55
-        'amp':   np.random.normal(0.20, 0.05, n_ref),   # variacion estacional
-        'elev':  np.random.normal(1200, 200, n_ref),
+        'ndre':  np.random.normal(0.46, 0.05, n_ref),  # NDRE activo
+        'amp':   np.random.normal(0.20, 0.05, n_ref),  # variacion clara
+        'elev':  np.random.normal(1200, 200,  n_ref),
         'clase': 1
     }))
 
-    # Bosque latifoliado (NDVI alto, poca variacion, indices altos)
+    # Clase 2: Bosque latifoliado denso
+    # NDVI alto, EVI alto, poca variacion, NDRE muy alto
     rows.append(pd.DataFrame({
-        'ndvi':  np.random.normal(0.82, 0.05, n_ref),   # >0.75
-        'gndvi': np.random.normal(0.74, 0.05, n_ref),   # >0.65
-        'evi':   np.random.normal(0.56, 0.04, n_ref),   # >0.50
+        'ndvi':  np.random.normal(0.82, 0.05, n_ref),
+        'gndvi': np.random.normal(0.74, 0.05, n_ref),
+        'evi':   np.random.normal(0.56, 0.04, n_ref),
         'ndwi':  np.random.normal(0.10, 0.05, n_ref),
-        'savi':  np.random.normal(0.61, 0.04, n_ref),   # >0.55
-        'ndre':  np.random.normal(0.71, 0.04, n_ref),   # >0.55
-        'amp':   np.random.normal(0.06, 0.03, n_ref),   # poca variacion
-        'elev':  np.random.normal(1350, 250, n_ref),
+        'savi':  np.random.normal(0.61, 0.04, n_ref),
+        'ndre':  np.random.normal(0.71, 0.04, n_ref),
+        'amp':   np.random.normal(0.06, 0.03, n_ref),
+        'elev':  np.random.normal(1350, 250,  n_ref),
         'clase': 2
     }))
 
-    # Pasto / gramíneas (NDVI bajo, alta variacion estacional)
+    # Clase 3: Pasto / gramíneas
     rows.append(pd.DataFrame({
         'ndvi':  np.random.normal(0.35, 0.10, n_ref),
         'gndvi': np.random.normal(0.29, 0.09, n_ref),
@@ -447,11 +506,11 @@ def clasificar_zona(df_ts, elev_mean, apto_altitud):
         'savi':  np.random.normal(0.23, 0.07, n_ref),
         'ndre':  np.random.normal(0.27, 0.08, n_ref),
         'amp':   np.random.normal(0.32, 0.09, n_ref),
-        'elev':  np.random.normal(700, 200, n_ref),
+        'elev':  np.random.normal(700, 200,   n_ref),
         'clase': 3
     }))
 
-    # Cultivo anual / milpa (muy variable, altitud baja)
+    # Clase 4: Cultivo anual / milpa
     rows.append(pd.DataFrame({
         'ndvi':  np.random.normal(0.44, 0.12, n_ref),
         'gndvi': np.random.normal(0.37, 0.11, n_ref),
@@ -460,8 +519,23 @@ def clasificar_zona(df_ts, elev_mean, apto_altitud):
         'savi':  np.random.normal(0.30, 0.09, n_ref),
         'ndre':  np.random.normal(0.35, 0.10, n_ref),
         'amp':   np.random.normal(0.48, 0.10, n_ref),
-        'elev':  np.random.normal(500, 150, n_ref),
+        'elev':  np.random.normal(500, 150,   n_ref),
         'clase': 4
+    }))
+
+    # Clase 5: Vegetacion arbustiva / matorral / bosque secundario
+    # NDVI ~0.50-0.60, NDRE BAJO (<0.35), NDWI positivo, poca variacion
+    # Esta es la clase que confunde con cafe a media altitud
+    rows.append(pd.DataFrame({
+        'ndvi':  np.random.normal(0.53, 0.06, n_ref),   # similar al cafe
+        'gndvi': np.random.normal(0.51, 0.06, n_ref),   # similar al cafe
+        'evi':   np.random.normal(0.34, 0.06, n_ref),   # similar al cafe
+        'ndwi':  np.random.normal(0.08, 0.06, n_ref),   # POSITIVO (mas humedo)
+        'savi':  np.random.normal(0.31, 0.05, n_ref),   # algo mas bajo
+        'ndre':  np.random.normal(0.28, 0.05, n_ref),   # BAJO — clave diferenciadora
+        'amp':   np.random.normal(0.09, 0.04, n_ref),   # poca variacion
+        'elev':  np.random.normal(1300, 200,  n_ref),   # misma altitud que cafe
+        'clase': 5
     }))
 
     df_ref = pd.concat(rows, ignore_index=True)
@@ -474,12 +548,11 @@ def clasificar_zona(df_ts, elev_mean, apto_altitud):
     x_zona    = np.array([[ndvi_prom, gndvi_prom, evi_prom, ndwi_prom,
                            savi_prom, ndre_prom, ndvi_amp, elev_mean]])
     proba     = clf.predict_proba(x_zona)[0]
+    # proba: [cafe, bosque, pasto, cultivo, matorral]
     prob_cafe = float(proba[0]) * 100
 
     # ─────────────────────────────────────────────────────────────────────────
     # NIVEL 3: Correlacion con patron fenologico del cafe en Honduras
-    # El cafe tiene pico ago-sep y caida en cosecha nov-ene
-    # Bosque denso tiene curva mas plana y alta todo el año
     # ─────────────────────────────────────────────────────────────────────────
     PATRON_CAFE = np.array([0.55,0.52,0.48,0.45,0.58,0.68,
                              0.72,0.75,0.73,0.68,0.60,0.57])
@@ -493,16 +566,15 @@ def clasificar_zona(df_ts, elev_mean, apto_altitud):
         obs  = patron_obs.loc[meses_c].values
         ref  = PATRON_CAFE[[m-1 for m in meses_c]]
         corr = float(np.corrcoef(obs, ref)[0, 1])
-        # Manejar NaN — puede ocurrir si la serie tiene poca variacion (bosque)
         if np.isnan(corr):
-            corr = 0.0   # sin variacion = no es cafe
+            corr = 0.0
     elif len(meses_c) >= 4:
-        obs  = patron_obs.loc[meses_c].values
-        ref  = PATRON_CAFE[[m-1 for m in meses_c]]
+        obs      = patron_obs.loc[meses_c].values
+        ref      = PATRON_CAFE[[m-1 for m in meses_c]]
         corr_raw = float(np.corrcoef(obs, ref)[0, 1])
-        corr = 0.0 if np.isnan(corr_raw) else corr_raw * 0.7  # penalizar pocos datos
+        corr     = 0.0 if np.isnan(corr_raw) else corr_raw * 0.7
     else:
-        corr = 0.0   # insuficientes datos = no confirmado
+        corr = 0.0
 
     sc_fenol = max(0.0, min(1.0, corr))
 
@@ -511,16 +583,25 @@ def clasificar_zona(df_ts, elev_mean, apto_altitud):
     # ─────────────────────────────────────────────────────────────────────────
     score_base = (0.35*(sc_reg/100) + 0.45*(prob_cafe/100) + 0.20*sc_fenol) * 100
 
-    # Aplicar penalizaciones por indicadores de bosque
+    # Penalizaciones por indicadores de no-cafe
     score_fin = max(0.0, score_base - penalizacion)
 
-    # Regla de techo: si RF da < 50% probabilidad, el score no puede superar 60%
+    # Regla de techo 1: RF < 50% → no puede superar 60%
     if prob_cafe < 50.0:
         score_fin = min(score_fin, 60.0)
 
-    # Regla de techo: si NDVI > 0.75 (bosque denso), no puede ser CAFE CONFIRMADO
+    # Regla de techo 2: NDVI > 0.75 (bosque denso) → maximo 54%
     if ndvi_prom > 0.75:
         score_fin = min(score_fin, 54.0)
+
+    # Regla de techo 3: NDRE bajo (<0.32) sugiere no-cafe → maximo 58%
+    # El Red Edge es el indicador mas especifico del cafe arábica
+    if ndre_prom < 0.32:
+        score_fin = min(score_fin, 58.0)
+
+    # Regla de techo 4: vegetacion ambigua + baja variacion → maximo 55%
+    if es_matorral and ndvi_amp < 0.12:
+        score_fin = min(score_fin, 55.0)
 
     if   score_fin >= 75: vered='CAFE CONFIRMADO';     cv='#1a7a4a'; emoji='OK'
     elif score_fin >= 55: vered='PROBABLE CAFE';       cv='#E87722'; emoji='PROBABLE'
@@ -746,16 +827,35 @@ if btn_analizar and st.session_state.poligono_geojson and gee_ok:
 
         # ── 3. Clima NASA POWER ───────────────────────────────────────────
         update_progress(0.82, "Descargando variables climaticas (NASA POWER)...")
-        clima_df = get_nasa_power(lat_c, lon_c, anio_analisis)
+        clima_df, aviso_clima = get_nasa_power(lat_c, lon_c, anio_analisis)
+
+        # Valores climatologicos de referencia para Honduras (La Paz ~1350 msnm)
+        CLIMA_DEFAULT = {
+            'tmax_mean':    27.5,
+            'tmin_mean':    16.5,
+            'precip_anual': 1650.0,
+        }
+
         if clima_df is not None:
             clima_df['fecha'] = pd.to_datetime(clima_df['fecha'])
+            tmax = float(clima_df['T2M_MAX'].mean())
+            tmin = float(clima_df['T2M_MIN'].mean())
+            prec = float(clima_df['PRECTOTCORR'].sum())
             clima = {
-                'tmax_mean':    float(clima_df['T2M_MAX'].mean()),
-                'tmin_mean':    float(clima_df['T2M_MIN'].mean()),
-                'precip_anual': float(clima_df['PRECTOTCORR'].sum()),
+                'tmax_mean':    tmax  if not np.isnan(tmax)  else CLIMA_DEFAULT['tmax_mean'],
+                'tmin_mean':    tmin  if not np.isnan(tmin)  else CLIMA_DEFAULT['tmin_mean'],
+                'precip_anual': prec  if not np.isnan(prec) and prec > 0
+                                      else CLIMA_DEFAULT['precip_anual'],
             }
         else:
-            clima = {'tmax_mean': 26.5, 'tmin_mean': 16.0, 'precip_anual': 1300}
+            clima = CLIMA_DEFAULT.copy()
+
+        # Validacion final de valores climaticos
+        if (clima['tmax_mean'] < 10 or clima['tmax_mean'] > 42 or
+                clima['precip_anual'] < 0 or clima['precip_anual'] > 8000):
+            clima = CLIMA_DEFAULT.copy()
+            aviso_clima = (aviso_clima or '') + \
+                " Usando valores climatologicos de referencia para Honduras."
 
         # ── 4. Clasificacion y prediccion ─────────────────────────────────
         update_progress(0.90, "Clasificando uso de suelo...")
@@ -830,6 +930,7 @@ if btn_analizar and st.session_state.poligono_geojson and gee_ok:
             'rend':         rend,
             'df_ts':        df_ts,
             'clima':        clima,
+            'aviso_clima':  aviso_clima,
             'dept_ref':     dept_ref,
             'anio':         anio_analisis,
             'nombre':       nombre_zona,
@@ -1096,11 +1197,14 @@ reales de tu zona y mostrara resultados aqui.
                 plt.close()
 
                 if r['clima']:
+                    # Mostrar aviso si los datos climaticos son de año alternativo
+                    if r.get('aviso_clima'):
+                        st.warning(f"⚠️ {r['aviso_clima']}")
                     st.caption(
-                        f"Tmax media: {r['clima']['tmax_mean']:.1f}C | "
-                        f"Precip. anual: {r['clima']['precip_anual']:.0f} mm "
-                        f"(NASA POWER {r['anio']}) | "
-                        f"Ensemble: {W_RF}×RF + {W_XGB}×XGB"
+                        f"Tmax media: {r['clima']['tmax_mean']:.1f}°C | "
+                        f"Tmin media: {r['clima'].get('tmin_mean', 16.5):.1f}°C | "
+                        f"Precip. anual: {r['clima']['precip_anual']:.0f} mm | "
+                        f"NASA POWER | Ensemble: {W_RF}×RF + {W_XGB}×XGB"
                     )
 
                 # Descarga rapida de la estimacion
