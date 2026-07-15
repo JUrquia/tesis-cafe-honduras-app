@@ -741,7 +741,8 @@ elif pagina == "🔮 Predicción de Cosecha":
                     {'range': [0, 15],  'color': '#ffcdd2'},
                     {'range': [15, 22], 'color': '#fff9c4'},
                     {'range': [22, 30], 'color': '#c8e6c9'},
-                    {'range': [30, 40], 'color': '#1b5e20', 'opacity': 0.6},
+                    {'range': [30, 40], 'color': 'rgba(27, 94, 32, 0.6)'},
+                    #{'range': [30, 40], 'color': '#1b5e20', 'opacity': 0.6},
                 ],
                 'threshold': {'line': {'color': 'red', 'width': 3},
                               'thickness': 0.75, 'value': hist_dept}
