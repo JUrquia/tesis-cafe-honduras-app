@@ -457,13 +457,14 @@ def clasificar_zona(df_ts, elev_mean, apto_altitud):
     # Diferenciador clave vs bosque humedo: AMPLITUD >= 0.18
     # El cafe bajo sombra pierde follaje en cosecha (nov-ene) → alta variacion
     # El bosque humedo permanece verde todo el año → amp < 0.15
-    # Pendiente >= 8° confirma sistema agroforestal en ladera (Honduras)
+    # Pendiente >= 7° confirma sistema agroforestal en ladera (Honduras)
+    # (bajado de 8° para incluir fincas en ladera suave como Finca Delma)
     es_cafe_sombra = (
         0.60 <= ndvi_prom <= 0.88 and
         ndre_prom >= 0.42 and          # NDRE activo — diferencia cafe de bosque
         evi_prom  <= 0.65 and          # EVI no tan alto como bosque denso puro
         ndvi_amp  >= 0.18 and          # variacion real de cosecha — clave
-        slope_mean >= 8.0              # ladera minima para sistema con sombra
+        slope_mean >= 7.0              # ladera minima para sistema con sombra
     )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -515,7 +516,7 @@ def clasificar_zona(df_ts, elev_mean, apto_altitud):
     es_bosque_humedo = (
         evi_prom  > 0.52 and
         ndwi_prom > 0.16 and
-        slope_mean < 8.0 and
+        slope_mean < 7.0 and
         not es_cafe_sombra
     )
     # Matorral: NDRE bajo (<0.35) + EVI bajo (<0.38) pero NDVI moderado
