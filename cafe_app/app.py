@@ -228,6 +228,11 @@ with st.sidebar:
     )
 
     st.divider()
+    st.caption(
+        "Modulos de analisis con GEE disponibles en el menu de paginas (barra lateral superior)"
+    )
+
+    st.divider()
     st.markdown("**Parámetros del modelo:**")
     st.code("""
 RF:  n_estimators=200
@@ -574,208 +579,120 @@ elif pagina == "🛰️ Explorador Satelital":
 # ═══════════════════════════════════════════════════════════════════════════════
 elif pagina == "🔮 Predicción de Cosecha":
 
-    st.title("🔮 Predicción de Cosecha")
-    st.caption("Modelo Ensemble: 0.55×RF + 0.45×XGBoost | Hiperparámetros Tabla 10.2")
+    st.title("🔮 Resumen Histórico y Referencia Departamental")
+    st.caption("Datos IHCAFE 2021-2025 | Referencia para comparar predicciones del módulo de Análisis de Zona")
 
-    st.info("""
-    **Modo de operación:** Esta vista usa un modelo simplificado para demostración.
-    Para la predicción completa con datos satelitales reales de GEE, ejecuta el notebook
-    de Google Colab y carga los resultados en la sección **Cargar predicción desde Colab**.
-    """)
-
-    tab_auto, tab_manual, tab_colab = st.tabs(
-        ["🤖 Predicción Automática", "🔧 Entrada Manual", "📥 Cargar desde Colab"]
+    st.info(
+        "Para predecir el rendimiento de una finca o zona específica, "
+        "usa el módulo **Análisis de Zona** — dibuja el polígono en el mapa "
+        "y el sistema extrae datos Sentinel-2 reales y estima la producción."
     )
 
-    with tab_auto:
-        st.markdown("**Predicción automática con parámetros climáticos en tiempo real**")
-
-        anio_pred = st.selectbox("Año satelital para predicción", [2026, 2025, 2024, 2023], help='2026 = prediccion para cosecha 2026-2027')
-        temporada_pred = f"{anio_pred}-{anio_pred+1}"
-
-        if st.button("🚀 Ejecutar predicción", type="primary"):
-            resultados = []
-            prog = st.progress(0)
-            status = st.empty()
-
-            for i, (dept, (lat, lon)) in enumerate(CENTROIDES.items()):
-                status.text(f"Procesando {dept}...")
-                prog.progress((i+1)/5)
-
-                # Descargar datos climáticos reales
-                df_c = get_nasa_power_cached(lat, lon, anio_pred)
-
-                if df_c is not None:
-                    df_c['fecha'] = pd.to_datetime(df_c['fecha'])
-                    tmax_mean   = df_c['T2M_MAX'].mean()
-                    precip_anual= df_c['PRECTOTCORR'].sum()
-                else:
-                    tmax_mean    = 26.5
-                    precip_anual = 1300
-
-                # Valores NDVI simulados (en producción vienen de GEE)
-                np.random.seed(hash(dept) % 2**32)
-                ndvi_mean       = np.random.uniform(0.54, 0.68)
-                ndvi_amplitude  = np.random.uniform(0.18, 0.30)
-                evi_mean        = ndvi_mean * 0.68
-
-                pred, ic_lo, ic_hi = predecir_rendimiento_simple(
-                    dept, ndvi_mean, ndvi_amplitude, evi_mean,
-                    precip_anual, tmax_mean
-                )
-
-                area_ref = df_ihcafe[df_ihcafe['departamento']==dept]['area_total_ha'].mean()
-                resultados.append({
-                    'Departamento':          dept,
-                    'Temporada':             temporada_pred,
-                    'NDVI medio':            round(ndvi_mean, 3),
-                    'Precipitación (mm)':    round(precip_anual, 0),
-                    'Temp. máx. (°C)':       round(tmax_mean, 1),
-                    'Predicción (qq/ha)':    pred,
-                    'IC 80% inferior':       ic_lo,
-                    'IC 80% superior':       ic_hi,
-                    'Área ref (ha)':         int(area_ref),
-                    'Producción est. (qq)':  int(pred * area_ref),
-                })
-
-            prog.empty()
-            status.empty()
-            df_pred = pd.DataFrame(resultados)
-
-            # Tabla de resultados
-            st.success(f"✅ Predicción completada para cosecha {temporada_pred}")
-            total_qq = df_pred['Producción est. (qq)'].sum()
-            st.metric("Producción total estimada (5 deptos)",
-                      f"{total_qq/1e6:.3f}M qq oro")
-
-            st.dataframe(
-                df_pred.style.background_gradient(
-                    subset=['Predicción (qq/ha)'], cmap='YlGn'
-                ),
-                use_container_width=True, hide_index=True
-            )
-
-            # Gráfico de predicción vs histórico
-            hist_media = df_ihcafe.groupby('departamento')['productividad_qq_ha'].mean().reset_index()
-            hist_media.columns = ['Departamento','Media histórica']
-            df_merge = df_pred.merge(hist_media, on='Departamento')
-
-            fig_pred = go.Figure()
-            depts_list = df_pred['Departamento'].tolist()
-            x = list(range(len(depts_list)))
-
-            fig_pred.add_trace(go.Bar(
-                x=depts_list, y=df_pred['Predicción (qq/ha)'],
-                name=f'Predicción {temporada_pred}',
-                marker_color=[COLORES_DEPT[d] for d in depts_list],
-                error_y=dict(
-                    type='data',
-                    symmetric=False,
-                    array=df_pred['IC 80% superior'] - df_pred['Predicción (qq/ha)'],
-                    arrayminus=df_pred['Predicción (qq/ha)'] - df_pred['IC 80% inferior'],
-                    color='gray', thickness=1.5, width=8
-                ),
-                text=[f"{v:.1f}" for v in df_pred['Predicción (qq/ha)']],
-                textposition='outside'
-            ))
-            fig_pred.add_trace(go.Scatter(
-                x=depts_list, y=df_merge['Media histórica'],
-                name='Media histórica (2021-25)',
-                mode='markers', marker=dict(symbol='diamond', size=12, color='red')
-            ))
-            fig_pred.update_layout(
-                title=f'Predicción de Rendimiento — Cosecha {temporada_pred}',
-                yaxis_title='qq oro/ha', height=420,
-                plot_bgcolor='white', paper_bgcolor='white',
-                yaxis=dict(gridcolor='#f0f0f0'),
-                legend=dict(orientation='h', yanchor='bottom', y=1.02)
-            )
-            st.plotly_chart(fig_pred, use_container_width=True)
-
-            # Exportar
-            csv = df_pred.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "⬇️ Descargar predicción CSV",
-                csv, f"prediccion_{temporada_pred}.csv", "text/csv"
-            )
-
-    with tab_manual:
-        st.markdown("**Configura los parámetros manualmente para explorar escenarios**")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            dept_man = st.selectbox("Departamento", list(DEPTS_ESTUDIO.values()), key='dept_man')
-            ndvi_man = st.slider("NDVI medio", 0.30, 0.90, 0.60, 0.01)
-            amp_man  = st.slider("Amplitud NDVI", 0.05, 0.50, 0.22, 0.01)
-        with col2:
-            evi_man   = st.slider("EVI medio", 0.15, 0.70, 0.38, 0.01)
-            precip_man= st.slider("Precipitación anual (mm)", 600, 2500, 1300, 50)
-            tmax_man  = st.slider("Temperatura máx. media (°C)", 20.0, 35.0, 26.5, 0.5)
-        with col3:
-            area_man  = st.number_input("Área (ha)", min_value=100, max_value=80000,
-                                         value=30000, step=500)
-
-        pred_man, ic_lo_m, ic_hi_m = predecir_rendimiento_simple(
-            dept_man, ndvi_man, amp_man, evi_man, precip_man, tmax_man
+    # ── Selector de temporada ─────────────────────────────────────────────────
+    col1, col2 = st.columns(2)
+    with col1:
+        temporada_sel = st.selectbox(
+            "Temporada de referencia",
+            ['2024-2025', '2023-2024', '2022-2023', '2021-2022'],
+            index=0
+        )
+    with col2:
+        dept_sel2 = st.selectbox(
+            "Departamento",
+            ['Todos'] + list(DEPTS_ESTUDIO.values()),
+            index=0
         )
 
-        st.divider()
-        col_r1, col_r2, col_r3 = st.columns(3)
-        col_r1.metric("Rendimiento predicho", f"{pred_man} qq/ha",
-                      f"IC 80%: [{ic_lo_m}, {ic_hi_m}]")
-        col_r2.metric("Producción estimada", f"{pred_man*area_man:,.0f} qq oro")
-        hist_dept = df_ihcafe[df_ihcafe['departamento']==dept_man]['productividad_qq_ha'].mean()
-        delta = pred_man - hist_dept
-        col_r3.metric("vs. Media histórica", f"{delta:+.2f} qq/ha",
-                      "↑ sobre media" if delta > 0 else "↓ bajo media")
+    # ── KPIs de la temporada seleccionada ────────────────────────────────────
+    df_temp = df_ihcafe[df_ihcafe['temporada'] == temporada_sel]
+    if dept_sel2 != 'Todos':
+        df_temp = df_temp[df_temp['departamento'] == dept_sel2]
 
-        # Gauge
-        fig_gauge = go.Figure(go.Indicator(
-            mode="gauge+number+delta",
-            value=pred_man,
-            title={'text': f"Rendimiento predicho — {dept_man}"},
-            delta={'reference': hist_dept, 'valueformat': '.2f'},
-            gauge={
-                'axis': {'range': [0, 40]},
-                'bar': {'color': COLORES_DEPT[dept_man]},
-                'steps': [
-                    {'range': [0, 15],  'color': '#ffcdd2'},
-                    {'range': [15, 22], 'color': '#fff9c4'},
-                    {'range': [22, 30], 'color': '#c8e6c9'},
-                    {'range': [30, 40], 'color': 'rgba(27, 94, 32, 0.6)'},
-                    #{'range': [30, 40], 'color': '#1b5e20', 'opacity': 0.6},
-                ],
-                'threshold': {'line': {'color': 'red', 'width': 3},
-                              'thickness': 0.75, 'value': hist_dept}
-            }
+    col_k1, col_k2, col_k3, col_k4 = st.columns(4)
+    col_k1.metric("Produccion total",
+                  f"{df_temp['produccion_total_qq'].sum()/1e6:.2f}M qq")
+    col_k2.metric("Productividad media",
+                  f"{df_temp['productividad_qq_ha'].mean():.2f} qq/ha")
+    col_k3.metric("Area total",
+                  f"{df_temp['area_total_ha'].sum()/1000:.0f}k ha")
+    col_k4.metric("Departamentos",
+                  f"{df_temp['departamento'].nunique()}")
+
+    st.divider()
+
+    # ── Grafico comparativo histórico ─────────────────────────────────────────
+    st.markdown("#### Evolución histórica por departamento")
+
+    df_plot = df_ihcafe.copy()
+    if dept_sel2 != 'Todos':
+        df_plot = df_plot[df_plot['departamento'] == dept_sel2]
+
+    fig_hist = go.Figure()
+    for dept in (list(DEPTS_ESTUDIO.values()) if dept_sel2 == 'Todos' else [dept_sel2]):
+        sub = df_plot[df_plot['departamento'] == dept].sort_values('anio_cosecha')
+        if len(sub) == 0:
+            continue
+        fig_hist.add_trace(go.Scatter(
+            x=sub['temporada'], y=sub['productividad_qq_ha'],
+            name=dept, mode='lines+markers',
+            line=dict(color=COLORES_DEPT.get(dept, '#888'), width=2.5),
+            marker=dict(size=9),
+            hovertemplate=f'<b>{dept}</b><br>%{{x}}<br>%{{y:.2f}} qq/ha<extra></extra>'
         ))
-        fig_gauge.update_layout(height=280, margin=dict(t=60, b=20))
-        st.plotly_chart(fig_gauge, use_container_width=True)
 
-    with tab_colab:
-        st.info("""
-        **Flujo de trabajo completo:**
-        1. Ejecuta `prediccion_cafe_v2_informe.ipynb` en Google Colab
-        2. El notebook exporta `prediccion_2025-2026.csv` a Google Drive
-        3. Descárgalo y súbelo aquí
-        """)
-        f_colab = st.file_uploader("Sube prediccion_TEMPORADA.csv generado en Colab", type='csv')
-        if f_colab:
-            df_colab = pd.read_csv(f_colab)
-            st.success(f"✓ Predicción cargada: {len(df_colab)} departamentos")
-            st.dataframe(df_colab, use_container_width=True, hide_index=True)
+    fig_hist.update_layout(
+        yaxis_title='Productividad (qq oro/ha)',
+        xaxis_title='Temporada',
+        height=380,
+        plot_bgcolor='white', paper_bgcolor='white',
+        yaxis=dict(gridcolor='#f0f0f0'),
+        xaxis=dict(gridcolor='#f0f0f0'),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0)
+    )
+    st.plotly_chart(fig_hist, use_container_width=True)
 
-            if 'Ensemble (qq/ha)' in df_colab.columns or 'Rendimiento Ensemble' in df_colab.columns:
-                col_val = 'Ensemble (qq/ha)' if 'Ensemble (qq/ha)' in df_colab.columns \
-                          else 'Rendimiento Ensemble'
-                col_dept = 'Departamento' if 'Departamento' in df_colab.columns else 'departamento'
-                fig_c = px.bar(df_colab, x=col_dept, y=col_val,
-                               color=col_dept,
-                               color_discrete_map=COLORES_DEPT,
-                               title='Predicción cargada desde Colab',
-                               labels={col_val:'qq oro/ha'})
-                fig_c.update_layout(height=380, plot_bgcolor='white',
-                                    showlegend=False)
-                st.plotly_chart(fig_c, use_container_width=True)
+    # ── Tabla de referencia ───────────────────────────────────────────────────
+    st.markdown("#### Productividad por departamento y temporada (qq oro/ha)")
+
+    pivot = df_ihcafe.pivot_table(
+        index='departamento', columns='temporada',
+        values='productividad_qq_ha', aggfunc='mean'
+    ).round(2)
+    pivot['Promedio 2021-25'] = pivot.mean(axis=1).round(2)
+    pivot = pivot.sort_values('Promedio 2021-25', ascending=False)
+
+    def color_cells(val):
+        if isinstance(val, float):
+            if val >= 25:   return 'background-color: #c8e6c9; color: #1b5e20'
+            elif val >= 20: return 'background-color: #fff9c4; color: #f57f17'
+            elif val >= 15: return 'background-color: #ffe0b2; color: #e65100'
+            else:           return 'background-color: #ffcdd2; color: #b71c1c'
+        return ''
+
+    st.dataframe(pivot.style.map(color_cells), use_container_width=True)
+    st.caption(
+        "Verde ≥25 qq/ha | Amarillo 20-25 | Naranja 15-20 | Rojo <15 | "
+        "Fuente: IHCAFE 2021-2025"
+    )
+
+    # ── Produccion acumulada ──────────────────────────────────────────────────
+    st.divider()
+    st.markdown("#### Produccion total acumulada (qq oro)")
+    fig_prod = px.bar(
+        df_ihcafe.groupby(['temporada','departamento'])['produccion_total_qq']
+                  .sum().reset_index(),
+        x='temporada', y='produccion_total_qq', color='departamento',
+        color_discrete_map=COLORES_DEPT,
+        labels={'produccion_total_qq':'qq oro', 'temporada':'Temporada',
+                'departamento':'Departamento'},
+        barmode='stack', height=360
+    )
+    fig_prod.update_layout(
+        plot_bgcolor='white', paper_bgcolor='white',
+        yaxis=dict(gridcolor='#f0f0f0'),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02)
+    )
+    st.plotly_chart(fig_prod, use_container_width=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
